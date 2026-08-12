@@ -1,0 +1,958 @@
+<title>LeKiwi 약통 픽업 데모 — 설계 문서</title>
+<style>
+  :root {
+    --bg: #F3F4F0;
+    --surface: #FBFAF7;
+    --surface-2: #EAE9E2;
+    --ink: #1C211F;
+    --ink-soft: #5B635E;
+    --ink-faint: #8B928C;
+    --line: #D7D6CD;
+    --line-strong: #BFBEB4;
+    --accent: #B5541F;
+    --accent-ink: #FFF8F2;
+    --accent-2: #3C5A6B;
+    --good: #3F7A55;
+    --good-bg: #E4EEE4;
+    --warn: #93691A;
+    --warn-bg: #F3E9D2;
+    --risk: #A23B34;
+    --risk-bg: #F3E1DE;
+    --shadow: 0 1px 2px rgba(28,33,31,0.06), 0 8px 24px -12px rgba(28,33,31,0.18);
+    --radius: 10px;
+    color-scheme: light;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #15191A;
+      --surface: #1C2223;
+      --surface-2: #232A2B;
+      --ink: #ECEEE9;
+      --ink-soft: #A2ABA4;
+      --ink-faint: #6C756F;
+      --line: #2C3436;
+      --line-strong: #3A4345;
+      --accent: #E28A54;
+      --accent-ink: #1B1310;
+      --accent-2: #85AABE;
+      --good: #7FBB92;
+      --good-bg: #223129;
+      --warn: #D8B268;
+      --warn-bg: #332B18;
+      --risk: #E08880;
+      --risk-bg: #35211F;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 12px 28px -14px rgba(0,0,0,0.6);
+      color-scheme: dark;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #15191A;
+    --surface: #1C2223;
+    --surface-2: #232A2B;
+    --ink: #ECEEE9;
+    --ink-soft: #A2ABA4;
+    --ink-faint: #6C756F;
+    --line: #2C3436;
+    --line-strong: #3A4345;
+    --accent: #E28A54;
+    --accent-ink: #1B1310;
+    --accent-2: #85AABE;
+    --good: #7FBB92;
+    --good-bg: #223129;
+    --warn: #D8B268;
+    --warn-bg: #332B18;
+    --risk: #E08880;
+    --risk-bg: #35211F;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 12px 28px -14px rgba(0,0,0,0.6);
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", -apple-system,
+      BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .mono {
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", "Consolas", "Liberation Mono", monospace;
+  }
+
+  a { color: var(--accent); }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 232px minmax(0, 780px);
+    justify-content: center;
+    gap: 56px;
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 40px 24px 120px;
+  }
+
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: minmax(0, 1fr); padding: 0 0 80px; }
+    .nav-rail { display: none; }
+    .mobile-nav { display: block !important; }
+  }
+
+  /* ---- masthead ---- */
+  .masthead {
+    grid-column: 1 / -1;
+    padding: 44px 24px 36px;
+    max-width: 1180px;
+    margin: 0 auto;
+    width: 100%;
+    border-bottom: 1px solid var(--line);
+  }
+  .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .eyebrow::before {
+    content: "";
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    display: inline-block;
+  }
+  h1.title {
+    font-size: clamp(28px, 4vw, 40px);
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    margin: 14px 0 10px;
+    text-wrap: balance;
+    max-width: 780px;
+  }
+  .subtitle {
+    font-size: 17px;
+    color: var(--ink-soft);
+    max-width: 620px;
+    margin: 0 0 20px;
+  }
+  .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 14px;
+    font-size: 13px;
+    color: var(--ink-soft);
+  }
+  .meta-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 11px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--surface);
+  }
+  .meta-chip .mono { color: var(--ink); }
+
+  /* ---- nav rail ---- */
+  .nav-rail {
+    position: sticky;
+    top: 32px;
+    align-self: start;
+    padding-top: 40px;
+  }
+  .nav-rail h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--ink-faint);
+    margin: 0 0 12px;
+    font-weight: 700;
+  }
+  .nav-rail ol {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    border-left: 1px solid var(--line);
+  }
+  .nav-rail li { margin: 0; }
+  .nav-rail a {
+    display: block;
+    padding: 6px 0 6px 16px;
+    margin-left: -1px;
+    border-left: 2px solid transparent;
+    font-size: 13.5px;
+    color: var(--ink-soft);
+    text-decoration: none;
+    line-height: 1.4;
+  }
+  .nav-rail a:hover { color: var(--ink); border-left-color: var(--line-strong); }
+
+  .mobile-nav { display: none; }
+
+  /* ---- main content ---- */
+  main { padding-top: 40px; min-width: 0; }
+
+  section { margin-bottom: 64px; scroll-margin-top: 24px; }
+  section:last-child { margin-bottom: 0; }
+
+  .section-head { margin-bottom: 20px; }
+  .section-kicker {
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace;
+    font-size: 11.5px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--accent-2);
+    font-weight: 700;
+    display: block;
+    margin-bottom: 6px;
+  }
+  h2 {
+    font-size: 24px;
+    font-weight: 800;
+    margin: 0 0 6px;
+    text-wrap: balance;
+  }
+  .section-dek { color: var(--ink-soft); font-size: 15px; max-width: 62ch; margin: 0; }
+
+  h3 {
+    font-size: 16.5px;
+    font-weight: 700;
+    margin: 28px 0 10px;
+  }
+  h3:first-child { margin-top: 0; }
+
+  p { margin: 0 0 14px; max-width: 66ch; }
+  ul, ol { margin: 0 0 14px; padding-left: 22px; }
+  li { margin-bottom: 6px; max-width: 62ch; }
+  strong { font-weight: 700; }
+
+  code {
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", "Consolas", monospace;
+    font-size: 0.88em;
+    background: var(--surface-2);
+    padding: 0.1em 0.4em;
+    border-radius: 4px;
+  }
+
+  pre {
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent-2);
+    border-radius: 6px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.6;
+    margin: 0 0 16px;
+  }
+  pre code { background: none; padding: 0; font-size: 1em; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 20px 22px;
+    box-shadow: var(--shadow);
+  }
+
+  .card-grid {
+    display: grid;
+    gap: 14px;
+    margin-bottom: 16px;
+  }
+
+  /* ---- status chips ---- */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11.5px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    padding: 3px 9px;
+    border-radius: 999px;
+  }
+  .chip-good { color: var(--good); background: var(--good-bg); }
+  .chip-warn { color: var(--warn); background: var(--warn-bg); }
+  .chip-risk { color: var(--risk); background: var(--risk-bg); }
+
+  /* ---- tables ---- */
+  .table-wrap { overflow-x: auto; margin-bottom: 16px; border: 1px solid var(--line); border-radius: var(--radius); }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; background: var(--surface); }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  thead th {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--ink-faint); font-weight: 700; background: var(--surface-2);
+    border-bottom: 1px solid var(--line-strong);
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.num, th.num { font-variant-numeric: tabular-nums; }
+
+  /* ---- comparison ---- */
+  .vs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    overflow: hidden;
+    margin-bottom: 16px;
+  }
+  .vs > div { background: var(--surface); padding: 18px 20px; }
+  .vs .vs-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    font-weight: 700; margin-bottom: 8px; display: block;
+  }
+  .vs .them .vs-label { color: var(--ink-faint); }
+  .vs .us { background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
+  .vs .us .vs-label { color: var(--accent); }
+  @media (max-width: 560px) { .vs { grid-template-columns: 1fr; } }
+
+  /* ---- sequence steps ---- */
+  .steps { display: grid; gap: 10px; margin-bottom: 16px; }
+  .step {
+    display: grid;
+    grid-template-columns: 28px 1fr;
+    gap: 14px;
+    padding: 14px 16px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+  }
+  .step-num {
+    font-family: ui-monospace, monospace;
+    font-weight: 700;
+    font-size: 13px;
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .step p { margin: 0; }
+  .step .step-title { font-weight: 700; margin-bottom: 2px; display: block; }
+
+  /* ---- callouts ---- */
+  .callout {
+    border-radius: var(--radius);
+    padding: 16px 18px;
+    border: 1px solid var(--line);
+    margin-bottom: 16px;
+  }
+  .callout-fallback { background: var(--warn-bg); border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
+  .callout-fallback .callout-title { color: var(--warn); }
+  .callout-title { font-weight: 800; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; display: block; }
+  .callout p:last-child { margin-bottom: 0; }
+
+  /* ---- constraint list ---- */
+  .constraints { display: grid; gap: 10px; margin-bottom: 16px; }
+  .constraint {
+    display: grid;
+    grid-template-columns: 20px 1fr;
+    gap: 10px;
+    align-items: start;
+  }
+  .constraint .mark {
+    width: 20px; height: 20px; margin-top: 2px;
+    border-radius: 5px;
+    background: var(--accent-2);
+    color: var(--surface);
+    font-size: 12px; font-weight: 800;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .constraint p { margin: 0; }
+  .constraint .k { font-weight: 700; }
+
+  /* ---- diagrams ---- */
+  figure { margin: 0 0 8px; }
+  .diagram-frame {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 20px 16px;
+    overflow-x: auto;
+  }
+  .diagram-frame svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+  figcaption {
+    font-size: 13px;
+    color: var(--ink-soft);
+    margin-top: 10px;
+    max-width: 66ch;
+  }
+
+  /* ---- repo tree ---- */
+  .repo-split { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px; }
+  @media (max-width: 560px) { .repo-split { grid-template-columns: 1fr; } }
+  .repo-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; }
+  .repo-card h4 { margin: 0 0 4px; font-size: 14.5px; }
+  .repo-card .repo-sub { font-size: 12.5px; color: var(--ink-faint); margin-bottom: 12px; }
+  .repo-card ul { margin: 0; padding-left: 0; list-style: none; font-family: ui-monospace, monospace; font-size: 12.5px; }
+  .repo-card li { margin-bottom: 5px; color: var(--ink-soft); }
+  .repo-card li b { color: var(--ink); font-weight: 600; }
+
+  /* ---- roadmap ---- */
+  .roadmap { border-left: 2px solid var(--line); margin-bottom: 8px; }
+  .task-row {
+    position: relative;
+    padding: 10px 0 10px 22px;
+    margin-left: -1px;
+    border-left: 2px solid transparent;
+  }
+  .task-row::before {
+    content: "";
+    position: absolute; left: -7px; top: 16px;
+    width: 12px; height: 12px; border-radius: 50%;
+    background: var(--surface); border: 2px solid var(--line-strong);
+  }
+  .task-row.done::before { border-color: var(--good); background: var(--good); }
+  .task-row.manual::before { border-color: var(--warn); }
+  .task-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 2px; }
+  .task-num { font-family: ui-monospace, monospace; font-size: 12px; color: var(--ink-faint); }
+  .task-title { font-weight: 700; font-size: 14.5px; }
+  .task-desc { font-size: 13.5px; color: var(--ink-soft); margin: 0; max-width: 60ch; }
+
+  /* ---- checklist ---- */
+  .checklist { list-style: none; padding: 0; margin: 0 0 16px; display: grid; gap: 8px; }
+  .checklist li {
+    display: grid; grid-template-columns: 18px 1fr; gap: 10px;
+    font-size: 14.5px; margin: 0; max-width: none;
+  }
+  .checklist .box {
+    width: 18px; height: 18px; margin-top: 2px;
+    border: 1.5px solid var(--line-strong); border-radius: 4px;
+  }
+
+  footer {
+    grid-column: 1 / -1;
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 28px 24px 0;
+    border-top: 1px solid var(--line);
+    font-size: 12.5px;
+    color: var(--ink-faint);
+    text-align: center;
+  }
+</style>
+
+<div class="masthead">
+  <span class="eyebrow">공학경진대회 · 설계 문서</span>
+  <h1 class="title">LeKiwi 약통 픽업 데모</h1>
+  <p class="subtitle">음성으로 부탁하면 에이보가 LeKiwi에게 전달하고, LeKiwi는 카메라로 책상 위 약통을 찾아 정밀하게 집어 든다.</p>
+  <div class="meta-row">
+    <span class="meta-chip">작성일 <span class="mono">2026-08-12</span></span>
+    <span class="meta-chip">타임라인 <span class="mono">2주</span> (1차 영상 + 2차 라이브)</span>
+    <span class="meta-chip">저장소 <span class="mono">yeon-03/lekiwi-pill-pickup</span> (private)</span>
+    <span class="meta-chip">연동 <span class="mono">robot_ws</span> (에이보)</span>
+  </div>
+</div>
+
+<div class="layout">
+  <nav class="nav-rail">
+    <h2>목차</h2>
+    <ol>
+      <li><a href="#context">배경 · 대회 형식</a></li>
+      <li><a href="#strategy">전략 — 비교 축 전환</a></li>
+      <li><a href="#scenario">데모 시나리오</a></li>
+      <li><a href="#constraints">환경 통제</a></li>
+      <li><a href="#architecture">아키텍처 · 트리거 파이프라인</a></li>
+      <li><a href="#control">제어 알고리즘 · 상태머신</a></li>
+      <li><a href="#perception">인식(YOLO) 계획</a></li>
+      <li><a href="#risks">리스크 & 완화책</a></li>
+      <li><a href="#verification">테스트 · 검증 계획</a></li>
+      <li><a href="#fallback">폴백 플랜</a></li>
+      <li><a href="#repos">저장소 구조</a></li>
+      <li><a href="#roadmap">구현 로드맵</a></li>
+      <li><a href="#open">확인 필요 사항</a></li>
+    </ol>
+  </nav>
+
+  <main>
+
+    <section id="context">
+      <div class="section-head">
+        <span class="section-kicker">Context</span>
+        <h2>배경 · 대회 형식</h2>
+        <p class="section-dek">음성 대화 로봇 "에이보"(별도 저장소 <code>robot_ws</code>)와 LeKiwi(팔+바퀴, LeRobot 기반)를 연동해 2주 뒤 공학경진대회에 제출한다.</p>
+      </div>
+
+      <h3>대회 진행 방식</h3>
+      <div class="steps">
+        <div class="step">
+          <span class="step-num">1</span>
+          <div><span class="step-title">1차 · 영상 제출</span><p>약 2주 후 마감. 실제로 여러 번 돌린 것 중 성공한 테이크를 편집해 제출한다.</p></div>
+        </div>
+        <div class="step">
+          <span class="step-num">2</span>
+          <div><span class="step-title">2차 · 라이브 시연</span><p>1차 직후(며칠 안). 1차와 같은 시스템이 현장에서 그대로 동작해야 한다 — 별도의 임시방편은 두지 않는다.</p></div>
+        </div>
+      </div>
+
+      <h3>배점 (총 100점)</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>항목</th><th class="num">배점</th><th>비고</th></tr></thead>
+          <tbody>
+            <tr><td>문제 정의 및 필요성</td><td class="num">15</td><td>누워있는 환자가 스스로 주울 수 없는 상황</td></tr>
+            <tr><td>창의성 · 혁신성</td><td class="num">20</td><td>자연어 트리거 + 저비용 카메라 접근</td></tr>
+            <tr><td>기술적 완성도</td><td class="num">25</td><td>배점 최대 항목 — 화려함보다 실제로 되는 것</td></tr>
+            <tr><td>실용성</td><td class="num">10</td><td>&nbsp;</td></tr>
+            <tr><td>성능 및 결과 검증</td><td class="num">20</td><td>반복 시행 성공률로 겨냥</td></tr>
+            <tr><td>발표 및 시연 가능성</td><td class="num">10</td><td>비전문가 심사위원 — 설명 내레이션 필요</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p style="max-width:66ch">심사위원은 학교 교수님들, 피지컬 AI 비전문가로 예상된다 — 기술적 정교함보다 시연이 직관적으로 인상적인지가 중요할 수 있지만, 배점표 자체는 명시적 항목 기준이라 실제 검증된 결과물을 요구한다. <strong>완성도(25)+성능검증(20) = 45점</strong>이 "화려함"이 아니라 "실제로 검증됐는가"를 묻는다는 점이 이 설계 전반의 전제다.</p>
+    </section>
+
+    <section id="strategy">
+      <div class="section-head">
+        <span class="section-kicker">Strategy</span>
+        <h2>전략 — 비교 축 전환</h2>
+        <p class="section-dek">경쟁팀(바퀴+양팔+SLAM+라이다 기반 재난탐색 로봇, 높은 완성도로 준비 중이라고 전언됨)과 같은 축에서 붙지 않는다.</p>
+      </div>
+
+      <div class="vs">
+        <div class="them">
+          <span class="vs-label">경쟁팀의 축</span>
+          <p style="margin:0">SLAM · 라이다 · 다중 센서로 "재난상황 탐색" 정교함을 겨룬다. 2주 만에 급조해 정면 승부하면 저희가 불리하다.</p>
+        </div>
+        <div class="us">
+          <span class="vs-label">우리의 축</span>
+          <p style="margin:0">자연어로 소통하며 도와주는 <strong>돌봄 로봇 생태계</strong> — 대화 AI(에이보)와 이동형 매니퓰레이터(LeKiwi)가 하나의 시스템처럼 연동되고, 값비싼 라이다 없이 카메라+AI만으로 문제를 푼다.</p>
+        </div>
+      </div>
+
+      <p>탐색 능력이 아니라 <strong>①자연어로 통한다 ②두 로봇이 하나의 시스템처럼 연동된다 ③저비용 센서로 푼다</strong>는 세 가지로 비교 기준 자체를 바꾼다. 이 재구성 덕분에 "탐색" 스코프도 자연스럽게 가벼워진다 — 방 전체를 정밀 매핑할 필요 없이, 책상 위 좁은 범위에서 확실히 되는 것에 집중한다.</p>
+
+      <div class="callout" style="background:color-mix(in srgb, var(--accent-2) 10%, var(--surface)); border-color: color-mix(in srgb, var(--accent-2) 35%, var(--line));">
+        <span class="callout-title" style="color:var(--accent-2)">부가 메모 — 포트폴리오 재활용</span>
+        <p>"카메라로 물체 위치를 인식해 로봇팔이 정밀하게 집는다"는 산업 자동화의 <strong>빈 피킹(bin picking)</strong>과 기술적으로 동일한 형태다. 대회 종료 후 코드 변경 없이 서사만 "공정 자동화: 비전 기반 부품 피킹"으로 바꿔 포트폴리오용으로 재사용 가능 — 이번 계획엔 반영하지 않는다.</p>
+      </div>
+    </section>
+
+    <section id="scenario">
+      <div class="section-head">
+        <span class="section-kicker">Demo</span>
+        <h2>데모 시나리오</h2>
+        <p class="section-dek">쉬운 것부터 보여주고 어려운 것으로 올라가는 2단계 구성. 비전문가 심사위원을 위해 진행 중 내레이션을 곁들인다.</p>
+      </div>
+
+      <div class="steps">
+        <div class="step">
+          <span class="step-num">1</span>
+          <div>
+            <span class="step-title">오프닝 — "에이보야, 르키위 오른쪽으로 돌려줘"</span>
+            <p>이미 실물 검증이 끝난 기능(<code class="mono">move_skill.py</code>, 2026-08-10)이라 리스크가 거의 없다. 음성으로 로봇을 통제한다는 인상을 먼저 심는다.</p>
+          </div>
+        </div>
+        <div class="step">
+          <span class="step-num">2</span>
+          <div>
+            <span class="step-title">하이라이트 — "에이보야, 저 약 좀 찾아서 갖다줘"</span>
+            <p>신규 개발하는 비전+집기 파이프라인. 성공 시 에이보가 "가져왔어요!"로 결과를 음성 안내한다.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="constraints">
+      <div class="section-head">
+        <span class="section-kicker">Constraints</span>
+        <h2>환경 통제 — 제약을 걸어 신뢰성 확보</h2>
+        <p class="section-dek">라이다 없는 카메라 시스템의 약점(방향 오판, 거리 부정확)을 환경 설계로 미리 없앤다.</p>
+      </div>
+
+      <div class="constraints">
+        <div class="constraint">
+          <span class="mark">▤</span>
+          <p><span class="k">장소:</span> 책상(고정 높이, 좁은 범위)으로 예상 — <span class="chip chip-warn">미확정, 확인 필요</span></p>
+        </div>
+        <div class="constraint">
+          <span class="mark">◎</span>
+          <p><span class="k">대상 물체:</span> 실제 빈 약통, <strong>종류/크기 고정</strong> — 화면상 크기로 거리를 역산할 수 있어 접근 제어가 정확해진다.</p>
+        </div>
+        <div class="constraint">
+          <span class="mark">⟲</span>
+          <p><span class="k">놓는 자세:</span> 규칙화(예: 라벨이 카메라를 향하게 눕혀서 항상 동일) — 방향에 따라 그립이 실패하는 리스크를 원천 제거.</p>
+        </div>
+        <div class="constraint">
+          <span class="mark">▦</span>
+          <p><span class="k">대비 확보:</span> 탐색 구역에 매트를 깔 수 있는 범위 내에서 사용.</p>
+        </div>
+        <div class="constraint">
+          <span class="mark">↳</span>
+          <p><span class="k">바퀴 이동:</span> 픽업 로직에 관여하지 않음 — 책상 범위가 좁아 팔+손목카메라만으로 충분, 베이스-팔 동시 조율이라는 복잡도 자체를 없앤다.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="architecture">
+      <div class="section-head">
+        <span class="section-kicker">Architecture</span>
+        <h2>아키텍처 · 트리거 파이프라인</h2>
+        <p class="section-dek">세 기기(에이보 Pi · 노트북 · LeKiwi) 경계를 넘나드는 흐름 — 기존 SSH 트리거 인프라를 그대로 재사용한다.</p>
+      </div>
+
+      <figure>
+        <div class="diagram-frame">
+          <svg viewBox="0 0 920 400" role="img" aria-label="음성 명령이 에이보 Pi에서 시작해 lekiwi_command_node를 거쳐 SSH로 노트북의 pick_pill_bottle.py를 실행하고, LeKiwiClient로 LeKiwi 하드웨어를 구동한 뒤 결과가 다시 SSH stdout을 통해 에이보로 돌아오는 전체 트리거 경로를 보여준다.">
+            <defs>
+              <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path>
+              </marker>
+            </defs>
+
+            <!-- lane zones -->
+            <rect x="16" y="16" width="270" height="368" rx="8" fill="none" stroke="currentColor" stroke-opacity="0.18"></rect>
+            <text x="30" y="40" font-size="12" font-weight="700" letter-spacing="0.04em" fill="currentColor" fill-opacity="0.55">에이보 PI (192.168.0.118)</text>
+
+            <rect x="326" y="16" width="270" height="368" rx="8" fill="none" stroke="currentColor" stroke-opacity="0.18"></rect>
+            <text x="340" y="40" font-size="12" font-weight="700" letter-spacing="0.04em" fill="currentColor" fill-opacity="0.55">노트북 (SSH 대상)</text>
+
+            <rect x="636" y="16" width="270" height="368" rx="8" fill="none" stroke="currentColor" stroke-opacity="0.18"></rect>
+            <text x="650" y="40" font-size="12" font-weight="700" letter-spacing="0.04em" fill="currentColor" fill-opacity="0.55">LEKIWI (192.168.0.201)</text>
+
+            <!-- 에이보 pi lane boxes -->
+            <rect x="40" y="66" width="222" height="46" rx="6" fill="none" stroke="currentColor"></rect>
+            <text x="151" y="94" font-size="13" text-anchor="middle" fill="currentColor">음성 "약 좀 찾아서 갖다줘"</text>
+
+            <rect x="40" y="150" width="222" height="46" rx="6" fill="none" stroke="currentColor"></rect>
+            <text x="151" y="172" font-size="13" text-anchor="middle" fill="currentColor">dialogue_node</text>
+            <text x="151" y="187" font-size="11" text-anchor="middle" fill="currentColor" fill-opacity="0.6">LLM tool-calling 판단</text>
+
+            <rect x="40" y="234" width="222" height="46" rx="6" fill="none" stroke="currentColor"></rect>
+            <text x="151" y="256" font-size="13" text-anchor="middle" fill="currentColor">/lekiwi_command 토픽</text>
+            <text x="151" y="271" font-size="11" text-anchor="middle" fill="currentColor" fill-opacity="0.6">std_msgs/String</text>
+
+            <rect x="40" y="318" width="222" height="46" rx="6" fill="none" stroke="var(--accent-2)" stroke-width="1.6"></rect>
+            <text x="151" y="340" font-size="13" text-anchor="middle" fill="currentColor" font-weight="700">lekiwi_command_node</text>
+            <text x="151" y="355" font-size="11" text-anchor="middle" fill="currentColor" fill-opacity="0.6">SKILL_MAP 조회 → SSH 실행</text>
+
+            <!-- arrows within lane 1 -->
+            <line x1="151" y1="112" x2="151" y2="150" stroke="currentColor" marker-end="url(#arrow)"></line>
+            <line x1="151" y1="196" x2="151" y2="234" stroke="currentColor" marker-end="url(#arrow)"></line>
+            <line x1="151" y1="280" x2="151" y2="318" stroke="currentColor" marker-end="url(#arrow)"></line>
+
+            <!-- SSH arrow crossing lane 1 -> lane 2 -->
+            <line x1="262" y1="341" x2="352" y2="341" stroke="var(--accent)" stroke-width="2" marker-end="url(#arrow)"></line>
+            <text x="307" y="330" font-size="11" text-anchor="middle" fill="var(--accent)" font-weight="700">SSH</text>
+
+            <!-- laptop lane boxes -->
+            <rect x="352" y="318" width="222" height="46" rx="6" fill="none" stroke="var(--accent)" stroke-width="1.6"></rect>
+            <text x="463" y="340" font-size="13" text-anchor="middle" fill="currentColor" font-weight="700">pick_pill_bottle.py</text>
+            <text x="463" y="355" font-size="11" text-anchor="middle" fill="currentColor" fill-opacity="0.6">이 저장소 · venv 실행</text>
+
+            <rect x="352" y="234" width="222" height="46" rx="6" fill="none" stroke="currentColor"></rect>
+            <text x="463" y="256" font-size="13" text-anchor="middle" fill="currentColor">손목 카메라 프레임 + YOLO</text>
+            <text x="463" y="271" font-size="11" text-anchor="middle" fill="currentColor" fill-opacity="0.6">탐색 · 접근 · 정렬 판정</text>
+
+            <rect x="352" y="150" width="222" height="46" rx="6" fill="none" stroke="currentColor"></rect>
+            <text x="463" y="172" font-size="13" text-anchor="middle" fill="currentColor">LeKiwiClient</text>
+            <text x="463" y="187" font-size="11" text-anchor="middle" fill="currentColor" fill-opacity="0.6">ZMQ, 연결 ~8.8초</text>
+
+            <line x1="463" y1="318" x2="463" y2="280" stroke="currentColor" marker-end="url(#arrow)"></line>
+            <text x="500" y="303" font-size="10.5" fill="currentColor" fill-opacity="0.6">프레임 수신</text>
+            <line x1="463" y1="234" x2="463" y2="196" stroke="currentColor" marker-end="url(#arrow)"></line>
+            <text x="502" y="219" font-size="10.5" fill="currentColor" fill-opacity="0.6">관절 명령 전송</text>
+
+            <!-- laptop -> lekiwi arrow -->
+            <line x1="574" y1="173" x2="662" y2="173" stroke="var(--accent)" stroke-width="2" marker-end="url(#arrow)"></line>
+            <text x="618" y="162" font-size="11" text-anchor="middle" fill="var(--accent)" font-weight="700">ZMQ</text>
+
+            <!-- lekiwi lane boxes -->
+            <rect x="662" y="150" width="222" height="46" rx="6" fill="none" stroke="currentColor"></rect>
+            <text x="773" y="172" font-size="13" text-anchor="middle" fill="currentColor">lekiwi_host.py</text>
+            <text x="773" y="187" font-size="11" text-anchor="middle" fill="currentColor" fill-opacity="0.6">팔 + 그리퍼 구동</text>
+
+            <rect x="662" y="234" width="222" height="46" rx="6" fill="none" stroke="currentColor"></rect>
+            <text x="773" y="256" font-size="13" text-anchor="middle" fill="currentColor">Present_Load 판독</text>
+            <text x="773" y="271" font-size="11" text-anchor="middle" fill="currentColor" fill-opacity="0.6">그립 성공 여부 추정</text>
+
+            <line x1="773" y1="196" x2="773" y2="234" stroke="currentColor" marker-end="url(#arrow)"></line>
+
+            <!-- result path back -->
+            <line x1="662" y1="257" x2="600" y2="341" stroke="currentColor" stroke-dasharray="4 3" marker-end="url(#arrow)"></line>
+            <text x="640" y="290" font-size="10.5" fill="currentColor" fill-opacity="0.6">결과 판정</text>
+
+            <line x1="352" y1="341" x2="262" y2="341" stroke="currentColor" stroke-dasharray="4 3" marker-end="url(#arrow)" transform="translate(0,26)"></line>
+            <rect x="40" y="0" width="0" height="0"></rect>
+            <text x="151" y="381" font-size="11" text-anchor="middle" fill="currentColor" fill-opacity="0.7">SSH stdout: SUCCESS / FAILED → 음성 응답</text>
+            <line x1="352" y1="367" x2="262" y2="367" stroke="currentColor" stroke-dasharray="4 3" marker-end="url(#arrow)"></line>
+          </svg>
+        </div>
+        <figcaption>음성 명령이 에이보 Pi(왼쪽)에서 시작해 SSH로 노트북(가운데)의 픽업 스크립트를 실행하고, LeKiwiClient로 LeKiwi(오른쪽) 하드웨어를 구동한다. 점선은 결과가 SSH stdout을 통해 에이보로 돌아와 음성 응답을 트리거하는 경로.</figcaption>
+      </figure>
+
+      <h3>핵심 판단</h3>
+      <p><code>pick_pill_bottle.py</code>는 ROS2 노드가 아니라 독립 파이썬 스크립트다 — <code>robot_ws</code>와 기술 스택이 달라(LeRobot, ultralytics 등) 완전히 분리된 저장소로 관리한다. <code>robot_ws</code> 쪽 변경은 <code>lekiwi_tool.py</code>에 스킬 선언 하나, <code>lekiwi_control.py</code>의 <code>SKILL_MAP</code>에 항목 하나뿐이다 — 기존 <code>pick_cube</code> 자리가 이미 <code>host_param: 'laptop_ssh_host'</code>로 이 구조를 예상해 설계돼 있었다.</p>
+    </section>
+
+    <section id="control">
+      <div class="section-head">
+        <span class="section-kicker">Control Logic</span>
+        <h2>제어 알고리즘 · 픽업 상태머신</h2>
+        <p class="section-dek">순수 로직으로 분리해 하드웨어 없이 단위테스트한다 — <code>robot_ws</code>의 <code>session_manager.py</code>와 동일한 설계 철학.</p>
+      </div>
+
+      <figure>
+        <div class="diagram-frame">
+          <svg viewBox="0 0 900 260" role="img" aria-label="상태는 탐색, 접근, 그립, 들어올리기, 성공, 실패로 이동한다. 탐색 중 물체가 감지되면 접근으로, 타임아웃되면 실패로 간다. 접근 중 정렬이 맞으면 그립으로 전이하며 하강 및 그립 동작을 실행하고, 물체를 놓치면 다시 탐색으로 돌아간다. 그립 후 부하 판독으로 잡았으면 들어올리기를 거쳐 성공으로, 못 잡았으면 실패로 간다.">
+            <defs>
+              <marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path>
+              </marker>
+            </defs>
+
+            <!-- main chain -->
+            <rect x="20" y="90" width="140" height="52" rx="8" fill="none" stroke="currentColor" stroke-width="1.4"></rect>
+            <text x="90" y="121" font-size="13.5" text-anchor="middle" fill="currentColor" font-weight="700">SEARCHING</text>
+
+            <rect x="230" y="90" width="150" height="52" rx="8" fill="none" stroke="currentColor" stroke-width="1.4"></rect>
+            <text x="305" y="121" font-size="13.5" text-anchor="middle" fill="currentColor" font-weight="700">APPROACHING</text>
+
+            <rect x="450" y="90" width="140" height="52" rx="8" fill="none" stroke="currentColor" stroke-width="1.4"></rect>
+            <text x="520" y="121" font-size="13.5" text-anchor="middle" fill="currentColor" font-weight="700">GRASPING</text>
+
+            <rect x="660" y="90" width="130" height="52" rx="8" fill="none" stroke="currentColor" stroke-width="1.4"></rect>
+            <text x="725" y="121" font-size="13.5" text-anchor="middle" fill="currentColor" font-weight="700">LIFTING</text>
+
+            <rect x="660" y="12" width="130" height="42" rx="21" fill="var(--good)" fill-opacity="0.16" stroke="var(--good)" stroke-width="1.4"></rect>
+            <text x="725" y="38" font-size="13" text-anchor="middle" fill="var(--good)" font-weight="800">SUCCEEDED</text>
+
+            <rect x="450" y="200" width="140" height="42" rx="21" fill="var(--risk)" fill-opacity="0.14" stroke="var(--risk)" stroke-width="1.4"></rect>
+            <text x="520" y="226" font-size="13" text-anchor="middle" fill="var(--risk)" font-weight="800">FAILED</text>
+
+            <!-- main flow arrows -->
+            <line x1="160" y1="116" x2="228" y2="116" stroke="currentColor" marker-end="url(#arrow2)"></line>
+            <text x="194" y="107" font-size="10.5" text-anchor="middle" fill="currentColor" fill-opacity="0.65">detected</text>
+
+            <line x1="380" y1="116" x2="448" y2="116" stroke="currentColor" marker-end="url(#arrow2)"></line>
+            <text x="414" y="107" font-size="10.5" text-anchor="middle" fill="currentColor" fill-opacity="0.65">aligned</text>
+
+            <line x1="590" y1="116" x2="658" y2="116" stroke="currentColor" marker-end="url(#arrow2)"></line>
+            <text x="624" y="107" font-size="10.5" text-anchor="middle" fill="currentColor" fill-opacity="0.65">grasped</text>
+
+            <line x1="725" y1="90" x2="725" y2="56" stroke="currentColor" marker-end="url(#arrow2)"></line>
+
+            <!-- searching self loop (sweep) -->
+            <path d="M 45 90 A 26 26 0 1 1 135 90" fill="none" stroke="currentColor" stroke-opacity="0.55" marker-end="url(#arrow2)"></path>
+            <text x="90" y="62" font-size="10.5" text-anchor="middle" fill="currentColor" fill-opacity="0.55">sweep (미검출)</text>
+
+            <!-- approaching self loop (nudge) -->
+            <path d="M 268 90 A 26 26 0 1 1 342 90" fill="none" stroke="currentColor" stroke-opacity="0.55" marker-end="url(#arrow2)"></path>
+            <text x="305" y="62" font-size="10.5" text-anchor="middle" fill="currentColor" fill-opacity="0.55">nudge (미정렬)</text>
+
+            <!-- approaching -> searching (lost) -->
+            <path d="M 260 142 C 220 175, 140 175, 100 142" fill="none" stroke="currentColor" stroke-opacity="0.6" marker-end="url(#arrow2)"></path>
+            <text x="180" y="178" font-size="10.5" text-anchor="middle" fill="currentColor" fill-opacity="0.6">target lost</text>
+
+            <!-- searching -> failed (timeout) -->
+            <path d="M 95 142 C 130 200, 380 220, 448 217" fill="none" stroke="var(--risk)" stroke-opacity="0.75" marker-end="url(#arrow2)"></path>
+            <text x="230" y="215" font-size="10.5" text-anchor="middle" fill="var(--risk)">timeout (8s)</text>
+
+            <!-- grasping -> failed -->
+            <line x1="520" y1="142" x2="520" y2="198" stroke="var(--risk)" stroke-opacity="0.85" marker-end="url(#arrow2)"></line>
+            <text x="565" y="172" font-size="10.5" fill="var(--risk)">not grasped</text>
+          </svg>
+        </div>
+        <figcaption>탐색(SEARCHING)에서 접근(APPROACHING)·그립(GRASPING)·들어올리기(LIFTING)를 거쳐 성공(SUCCEEDED)으로 이동한다. 각 단계는 타임아웃·정렬실패·그립실패 시 실패(FAILED)로 빠지는 경로를 갖는다 — <code>pick_state_machine.py</code>의 <code>tick()</code> 함수 그대로.</figcaption>
+      </figure>
+
+      <h3>실행 루프 개요</h3>
+      <div class="steps">
+        <div class="step"><span class="step-num">1</span><div><span class="step-title">연결</span><p>LeKiwiClient 연결 — 실측 오버헤드 약 8.8초(2026-08-11 확인).</p></div></div>
+        <div class="step"><span class="step-num">2</span><div><span class="step-title">탐색</span><p>손목 카메라로 YOLO 반복 추론. 책상 범위가 좁아 대부분 즉시 검출될 것으로 기대, 스윕은 안전망.</p></div></div>
+        <div class="step"><span class="step-num">3</span><div><span class="step-title">접근 · 정렬(폐루프)</span><p>bbox 중심 오차 → 팔 미세 조정, bbox 크기(알려진 실물 크기 기준 역산한 거리) → 접근 거리 계산.</p></div></div>
+        <div class="step"><span class="step-num">4</span><div><span class="step-title">하강 · 그립</span><p>자세가 고정돼 있다는 전제로 고정 시퀀스 실행.</p></div></div>
+        <div class="step"><span class="step-num">5</span><div><span class="step-title">성공 판정</span><p>그리퍼 서보의 <code>Present_Load</code>/<code>Present_Current</code> — Feetech 서보에 이미 존재하는 레지스터, 새 하드웨어 불필요(2026-08-12 확인).</p></div></div>
+      </div>
+    </section>
+
+    <section id="perception">
+      <div class="section-head">
+        <span class="section-kicker">Perception</span>
+        <h2>인식(YOLO) 계획</h2>
+        <p class="section-dek">가장 저렴한 방법부터 시도하고, 필요할 때만 다음 단계로.</p>
+      </div>
+      <div class="vs">
+        <div class="them">
+          <span class="vs-label">1단계 — 공짜로 시도</span>
+          <p style="margin:0">COCO 사전학습 YOLO의 기존 <code>bottle</code> 클래스로 우리 약통이 인식되는지 먼저 확인. 되면 학습 단계 전체를 생략한다.</p>
+        </div>
+        <div class="us">
+          <span class="vs-label">2단계 — 안 되면 파인튜닝</span>
+          <p style="margin:0">고정된 약통을 책상 세팅에서 150~300장 촬영(자세 고정이라 거리/각도 변주 위주) → 라벨링 → YOLOv8n 파인튜닝. 대략 하루 작업.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="risks">
+      <div class="section-head">
+        <span class="section-kicker">Risk Register</span>
+        <h2>리스크 & 완화책</h2>
+        <p class="section-dek">배점표의 "성능 및 결과 검증" 항목을 지키려면 리스크를 숨기지 않고 먼저 다뤄야 한다.</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>리스크</th><th>완화책</th><th>상태</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>물체 방향에 따라 그립 실패</td>
+              <td>놓는 자세를 규칙화해 고정</td>
+              <td><span class="chip chip-good">완화됨</span></td>
+            </tr>
+            <tr>
+              <td>거리 추정 부정확</td>
+              <td>물체 실제 크기 고정값 기반 역산</td>
+              <td><span class="chip chip-good">완화됨</span></td>
+            </tr>
+            <tr>
+              <td>그립 성공 여부 확인 어려움</td>
+              <td>그리퍼 서보 Present_Load/Current 판독 (신규 하드웨어 불필요)</td>
+              <td><span class="chip chip-good">완화됨</span></td>
+            </tr>
+            <tr>
+              <td>학습 환경 ≠ 실제 대회장(조명 등)</td>
+              <td>1차→2차 사이 시간이 짧아 재학습 여유 거의 없음</td>
+              <td><span class="chip chip-risk">미해결</span></td>
+            </tr>
+            <tr>
+              <td>라즈베리파이/노트북 네트워크 불안정</td>
+              <td>이 세션 중 실제로 반복 관측됨 — 뾰족한 해법 없음, 반복 시행으로 빈도 실측</td>
+              <td><span class="chip chip-risk">미해결</span></td>
+            </tr>
+            <tr>
+              <td>2주 타임라인 전체</td>
+              <td>폴백 플랜(음성 이동만)으로 축소 가능하게 설계</td>
+              <td><span class="chip chip-warn">완화 수단 있음</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="verification">
+      <div class="section-head">
+        <span class="section-kicker">Verification</span>
+        <h2>테스트 · 검증 계획</h2>
+        <p class="section-dek">배점표 "성능 및 결과 검증"(20점) 항목을 실측 수치로 정면 겨냥한다.</p>
+      </div>
+      <ul>
+        <li>약통을 책상 위 정해진 범위 내 여러 지점(예: 5곳)에 규칙대로 배치, 각 지점 3회씩 반복</li>
+        <li>성공/실패 여부, 소요시간을 기록 → <code>"N/M회 성공, 평균 X초"</code> 형태로 발표자료/영상에 제시</li>
+        <li>영상은 실제 반복 시행 중 성공한 테이크를 편집해 구성 — <strong>좌표 하드코딩 등 결과 조작은 하지 않는다</strong>(2차가 라이브라 어차피 드러나고, 배점표 취지에도 어긋남)</li>
+      </ul>
+    </section>
+
+    <section id="fallback">
+      <div class="section-head">
+        <span class="section-kicker">Fallback</span>
+        <h2>폴백 플랜</h2>
+      </div>
+      <div class="callout callout-fallback">
+        <span class="callout-title">2주 안에 안정화되지 않을 경우</span>
+        <p>라이브 시연을 <strong>음성 명령으로 LeKiwi 이동/방향전환만 보여주는 축소판</strong>으로 다운그레이드한다 — 이미 실물 검증이 끝난 기능(2026-08-10)이라 100% 안전한 대체재다. 새 스킬(<code>pick_pill_bottle</code>)은 기존 스킬을 전혀 건드리지 않고 "추가"만 하므로, 이 폴백은 언제나 자동으로 살아있다. 단, 이 경우 창의성/성능검증 점수는 낮아질 것으로 예상되어 최후 수단으로만 사용한다.</p>
+      </div>
+    </section>
+
+    <section id="repos">
+      <div class="section-head">
+        <span class="section-kicker">Repositories</span>
+        <h2>저장소 구조</h2>
+        <p class="section-dek">기술 스택이 다른 두 저장소를 SSH 인터페이스로만 연결한다 — "메인 프로그램 + 플러그인" 원칙.</p>
+      </div>
+      <div class="repo-split">
+        <div class="repo-card">
+          <h4>lekiwi-pill-pickup <span class="chip chip-good" style="margin-left:6px">신규</span></h4>
+          <div class="repo-sub">yeon-03/lekiwi-pill-pickup · private</div>
+          <ul>
+            <li><b>src/lekiwi_pill_pickup/</b> — 순수 로직 + 통합 스크립트</li>
+            <li><b>scripts/</b> — 캘리브레이션 · 학습 스크립트</li>
+            <li><b>tests/</b> — pytest, 하드웨어 없이 실행</li>
+            <li><b>venv/</b> — LeRobot · ultralytics 독립 환경</li>
+          </ul>
+        </div>
+        <div class="repo-card">
+          <h4>robot_ws <span class="chip chip-warn" style="margin-left:6px">최소 변경</span></h4>
+          <div class="repo-sub">에이보 본체 — 기존 저장소</div>
+          <ul>
+            <li><b>lekiwi_tool.py</b> — 스킬 선언 1줄 추가</li>
+            <li><b>lekiwi_control.py</b> — SKILL_MAP 항목 1개 추가</li>
+            <li><b>lekiwi_command_node.py</b> — 변경 없음(기존 인프라 재사용)</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="roadmap">
+      <div class="section-head">
+        <span class="section-kicker">Implementation Plan</span>
+        <h2>구현 로드맵</h2>
+        <p class="section-dek">순수 로직(TDD)과 실기기 검증을 분리해 진행한다. 전체 계획: <code>docs/superpowers/plans/2026-08-12-lekiwi-pill-pickup.md</code></p>
+      </div>
+
+      <div class="roadmap">
+        <div class="task-row manual">
+          <div class="task-head"><span class="task-num">TASK 01</span><span class="task-title">라이브 장소가 실제 책상인지 확인</span><span class="chip chip-warn">사람 확인</span></div>
+          <p class="task-desc">이후 모든 설계(카메라 거리, 팔 접근 범위)의 전제. 이게 틀리면 재설계 필요.</p>
+        </div>
+        <div class="task-row"><div class="task-head"><span class="task-num">TASK 02</span><span class="task-title">저장소 스캐폴딩</span></div><p class="task-desc">독립 venv, 패키지 구조, pytest 설정.</p></div>
+        <div class="task-row manual">
+          <div class="task-head"><span class="task-num">TASK 03</span><span class="task-title">그리퍼 부하 실측</span><span class="chip chip-warn">실기기</span></div>
+          <p class="task-desc">Present_Load/Current를 빈손/약통 잡은 상태에서 측정해 판정 임계값을 채운다.</p>
+        </div>
+        <div class="task-row manual">
+          <div class="task-head"><span class="task-num">TASK 04</span><span class="task-title">카메라 초점거리 캘리브레이션</span><span class="chip chip-warn">실기기</span></div>
+          <p class="task-desc">알려진 거리에서 촬영해 focal_length_px 산출.</p>
+        </div>
+        <div class="task-row manual">
+          <div class="task-head"><span class="task-num">TASK 05</span><span class="task-title">노트북 SSH 서버 활성화</span><span class="chip chip-warn">인프라</span></div>
+          <p class="task-desc">dialogue_node/lekiwi_command_node가 이미 이 노트북에서 실행 중 — self-SSH로 연결.</p>
+        </div>
+        <div class="task-row done"><div class="task-head"><span class="task-num">TASK 06–10</span><span class="task-title">순수 로직 모듈 5종 (TDD)</span></div><p class="task-desc">거리추정 · 정렬오차 · 그립판정 · YOLO결과파싱 · 픽업 상태머신 — 하드웨어 없이 전부 단위테스트.</p></div>
+        <div class="task-row manual">
+          <div class="task-head"><span class="task-num">TASK 11</span><span class="task-title">YOLO 사전학습 bottle 클래스 1차 시험</span><span class="chip chip-warn">실기기</span></div>
+          <p class="task-desc">성공하면 Task 12(파인튜닝) 생략 가능.</p>
+        </div>
+        <div class="task-row manual">
+          <div class="task-head"><span class="task-num">TASK 12</span><span class="task-title">YOLO 커스텀 파인튜닝 (조건부)</span><span class="chip chip-warn">실기기 · 수작업</span></div>
+          <p class="task-desc">Task 11이 부족할 때만: 촬영 → 라벨링 → 학습.</p>
+        </div>
+        <div class="task-row"><div class="task-head"><span class="task-num">TASK 13</span><span class="task-title">pick_pill_bottle.py 통합 스크립트</span></div><p class="task-desc">순수 로직 5종을 실제 하드웨어(LeKiwiClient, YOLO, 서보버스)와 연결.</p></div>
+        <div class="task-row"><div class="task-head"><span class="task-num">TASK 14–15</span><span class="task-title">robot_ws 최소 변경</span></div><p class="task-desc">lekiwi_tool.py 스킬 선언 + lekiwi_control.py SKILL_MAP 항목, 테스트 포함.</p></div>
+        <div class="task-row manual">
+          <div class="task-head"><span class="task-num">TASK 16</span><span class="task-title">통합 리허설 + 반복 시행 기록</span><span class="chip chip-warn">실기기</span></div>
+          <p class="task-desc">관절 게인 실측 튜닝, 음성 트리거 전체 경로 end-to-end 확인, 성공률 표 작성.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="open">
+      <div class="section-head">
+        <span class="section-kicker">Open Questions</span>
+        <h2>확인 필요 사항</h2>
+      </div>
+      <ul class="checklist">
+        <li><span class="box"></span><span>2차 라이브 시연 장소가 실제로 책상(고정 높이, 좁은 범위)인지 확정</span></li>
+        <li><span class="box"></span><span>노트북 SSH 서버 활성화 + <code>laptop_ssh_host</code> 파라미터 설정</span></li>
+        <li><span class="box"></span><span>그리퍼 서보 실제 ID/포트 확인 및 Present_Load/Current 판독 실측 검증</span></li>
+        <li><span class="box"></span><span>YOLO 사전학습 "bottle" 클래스가 실제 약통에 통하는지 1차 시험</span></li>
+        <li><span class="box"></span><span>대회 제출 형식(코드 저장소 제출 여부 등) 확인</span></li>
+      </ul>
+    </section>
+
+  </main>
+
+  <footer>LeKiwi 약통 픽업 데모 · 설계 문서 · 2026-08-12 · robot_ws ↔ lekiwi-pill-pickup 연동</footer>
+</div>
