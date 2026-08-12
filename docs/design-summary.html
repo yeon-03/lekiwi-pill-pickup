@@ -837,9 +837,20 @@
               <td>폴백 플랜(음성 이동만)으로 축소 가능하게 설계</td>
               <td><span class="chip chip-warn">완화 수단 있음</span></td>
             </tr>
+            <tr>
+              <td><strong>[병목]</strong> LeKiwiClient 연결 대기 ~8.8초</td>
+              <td>음성 명령 직후 로봇이 실제로 움직이기까지 최소 9초 무반응 구간 발생 — LeRobot 프레임워크 초기화 비용이라 단축 어려움. <strong>없애지 않고 감춘다:</strong> 이 구간을 에이보의 "지금 로봇이 연결되는 중이에요" 내레이션으로 채운다</td>
+              <td><span class="chip chip-warn">대응 방향 있음</span></td>
+            </tr>
+            <tr>
+              <td><strong>[병목]</strong> 현장 네트워크 품질에 따른 이중 지연</td>
+              <td>①OpenAI 도구 호출 판단이 인터넷 상태에 따라 0.5~2초 변동 ②접근/정렬 폐루프 중 프레임 지연이 "팔이 뚝뚝 끊기는" 형태로 나타남 — 당일 네트워크 구성(미확정)에 직접 영향받음</td>
+              <td><span class="chip chip-risk">미해결</span></td>
+            </tr>
           </tbody>
         </table>
       </div>
+      <p style="max-width:66ch; font-size:14px; color:var(--ink-soft)">참고 — 병목이 <em>아닌</em> 것으로 확인된 지점: YOLO 추론(GPU, 프레임당 ~10ms, 픽업 중 STT가 꺼져있어 GPU 경합 없음) · 에이보→노트북 SSH 트리거(self-SSH라 네트워크 안 탐) · 그리퍼 부하값 읽기(시리얼 통신, 수 ms).</p>
     </section>
 
     <section id="verification">
