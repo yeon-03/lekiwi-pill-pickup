@@ -1,0 +1,9 @@
+.worktrees/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+requirements-lock.txt
+*.pt
+*.onnx
+data/
