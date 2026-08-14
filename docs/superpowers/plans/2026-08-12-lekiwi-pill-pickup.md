@@ -15,6 +15,17 @@
 `pytest`. 노트북(RTX 3070 8GB)에 독립 venv로 설치(시스템/robot_ws 의존성과 격리 — 이
 프로젝트가 CosyVoice/DeepFilterNet 등에서 반복 겪은 numpy/torch 버전 충돌 방지 관례).
 
+## 구현 현황 (2026-08-14)
+
+- ✅ **완료** (하드웨어 불필요, 코드+테스트로 검증됨): Task 2(스캐폴딩), Task 6~10
+  (거리추정/정렬오차/그립판정/YOLO파싱/상태머신, pytest 28/28 통과), Task 13(통합
+  스크립트, 실제 import 확인 완료 — 관절 게인은 자리표시), Task 14~15(robot_ws —
+  `feature/lekiwi-pill-bottle` 브랜치에 커밋, colcon build 통과, pytest 23/23 통과)
+- ⏳ **미착수 — 사람이 실기기로 직접 진행 필요**: Task 1(시연 장소 확인), Task 3
+  (그리퍼 부하 실측), Task 4(카메라 캘리브레이션), Task 5(SSH 인프라), Task 11
+  (YOLO 사전학습 1차 시험), Task 12(파인튜닝, Task 11 결과에 따라 조건부), Task 16
+  (실기기 통합 리허설)
+
 ## Global Constraints
 
 - 설계 문서: `docs/superpowers/specs/2026-08-12-lekiwi-pill-pickup-design.md` (이 저장소)
