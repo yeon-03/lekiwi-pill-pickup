@@ -10,9 +10,10 @@ import cv2
 
 sys.path.insert(0, str(Path(__file__).parent))
 from color_detect import COLOR_RANGES, find_color_blobs  # noqa: E402
+from test_bottle_color import classify_color  # noqa: E402
 
 DRAW = {'red': (0, 0, 255), 'yellow': (0, 200, 255),
-        'green': (0, 255, 0), 'blue': (255, 0, 0)}
+        'green': (0, 255, 0), 'blue': (255, 0, 0), 'white': (200, 200, 200)}
 
 # 자동 화이트밸런스를 켜두면 검은 보드가 조명에 따라 파란색으로 왜곡되어
 # 찍히는 문제를 실측으로 확인함(2026-08-25) — 색상검출 전에 반드시 고정할 것.
@@ -103,7 +104,16 @@ def main() -> None:
     p.add_argument('--exposure', type=int, default=EXPOSURE_DEFAULT,
                    help=f'노출값 {EXPOSURE_MIN}~{EXPOSURE_MAX}, 낮을수록 어둡지만 '
                         f'중앙 정반사 글레어가 줄어듦(기본 {EXPOSURE_DEFAULT})')
+    p.add_argument('--yolo', action='store_true',
+                   help='색상검출 대신 YOLO(bottle) + 색상판정으로 검출')
+    p.add_argument('--yolo-conf', type=float, default=0.25, help='YOLO confidence threshold')
     args = p.parse_args()
+
+    yolo_model = None
+    if args.yolo:
+        from ultralytics import YOLO
+        print('YOLO 모델 로딩 중...')
+        yolo_model = YOLO('yolov8n.pt')
 
     wb_temp = max(WB_TEMPERATURE_MIN, min(WB_TEMPERATURE_MAX, args.wb_temp))
     if not args.no_wb_fix:
@@ -155,7 +165,19 @@ def main() -> None:
             else:
                 view = frame
 
-            if not args.no_color:
+            if yolo_model is not None:
+                results = yolo_model(view, verbose=False, conf=args.yolo_conf)[0]
+                for box, cls, conf in zip(results.boxes.xyxy, results.boxes.cls,
+                                           results.boxes.conf):
+                    if results.names[int(cls)] != 'bottle':
+                        continue
+                    x1, y1, x2, y2 = map(int, box.tolist())
+                    crop = view[y1:y2, x1:x2]
+                    label, _ = classify_color(crop) if crop.size else ('?', {})
+                    cv2.rectangle(view, (x1, y1), (x2, y2), (0, 255, 255), 2)
+                    cv2.putText(view, f'{label} {float(conf):.2f}', (x1, max(0, y1 - 8)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+            elif not args.no_color:
                 for color in args.colors:
                     for x1, y1, x2, y2, area in find_color_blobs(view, color, args.min_area):
                         cv2.rectangle(view, (x1, y1), (x2, y2), DRAW[color], 2)
