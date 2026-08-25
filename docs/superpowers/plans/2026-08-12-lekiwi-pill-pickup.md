@@ -15,6 +15,17 @@
 `pytest`. 노트북(RTX 3070 8GB)에 독립 venv로 설치(시스템/robot_ws 의존성과 격리 — 이
 프로젝트가 CosyVoice/DeepFilterNet 등에서 반복 겪은 numpy/torch 버전 충돌 방지 관례).
 
+## 구현 현황 (2026-08-14)
+
+- ✅ **완료** (하드웨어 불필요, 코드+테스트로 검증됨): Task 2(스캐폴딩), Task 6~10
+  (거리추정/정렬오차/그립판정/YOLO파싱/상태머신, pytest 28/28 통과), Task 13(통합
+  스크립트, 실제 import 확인 완료 — 관절 게인은 자리표시), Task 14~15(robot_ws —
+  `feature/lekiwi-pill-bottle` 브랜치에 커밋, colcon build 통과, pytest 23/23 통과)
+- ⏳ **미착수 — 사람이 실기기로 직접 진행 필요**: Task 1(시연 장소 확인), Task 3
+  (그리퍼 부하 실측), Task 4(카메라 캘리브레이션), Task 5(SSH 인프라), Task 11
+  (YOLO 사전학습 1차 시험), Task 12(파인튜닝, Task 11 결과에 따라 조건부), Task 16
+  (실기기 통합 리허설)
+
 ## Global Constraints
 
 - 설계 문서: `docs/superpowers/specs/2026-08-12-lekiwi-pill-pickup-design.md` (이 저장소)
@@ -1329,12 +1340,16 @@ git commit -m "Add: 약통 픽업 메인 통합 스크립트 (실기기 튜닝�
 
 ---
 
-## Task 14: robot_ws — `lekiwi_tool.py`에 신규 스킬 선언 추가
+## Task 14: robot_ws — `lekiwi_tool.py`에 신규 스킬 선언 추가 + 대시보드 도구설명 등록
 
-**이 태스크는 `robot_ws`(별도 저장소, 이 저장소가 아님) 안에서 진행한다.**
+**이 태스크는 `robot_ws`(별도 저장소, 이 저장소가 아님) 안에서, `feature/lekiwi-pill-bottle`
+브랜치(기존 `develop`은 건드리지 않음, 2026-08-14 확정)에서 진행한다.**
 
 **Files:**
 - Modify: `/home/roboseasy/robot_ws/src/ros_dialogue/ros_dialogue/lekiwi_tool.py:17,23-24`
+- Modify: `/home/roboseasy/robot_ws/src/ros_dialogue/ros_dialogue/education_bridge_node.py`
+  (도구 설명 import 목록 — 2026-08-14 코드 확인 결과 `lekiwi_tool`이 아예 없어서
+  대시보드가 이 스킬 호출을 설명 없이 표시할 것으로 확정됨, design.md 리스크 표 참고)
 
 **Interfaces:**
 - Consumes: 없음(LLM 도구 선언, 실제 실행 안 됨 — 기존 패턴과 동일)
@@ -1358,28 +1373,44 @@ def run_lekiwi_skill(
     raise RuntimeError('run_lekiwi_skill은 dialogue_node가 직접 처리해야 합니다')
 ```
 
-- [ ] **Step 2: 빌드 확인**
+- [ ] **Step 2: `education_bridge_node.py`에 `run_lekiwi_skill` 도구 설명 등록**
+  (대시보드가 이 스킬 호출을 "약 좀 찾아서 갖다줘" 문구 없이 알 수 없는 도구로 표시하는
+  것 방지)
+
+```python
+# import 목록(파일 상단)에 추가:
+from .lekiwi_tool import run_lekiwi_skill
+
+# TOOL_INFO 딕셔너리 리스트에 추가:
+        (run_lekiwi_skill, 'LeKiwi 로봇 조종'),
+```
+
+- [ ] **Step 3: 빌드 확인**
 
 ```bash
 cd ~/robot_ws
 colcon build --packages-select ros_dialogue --symlink-install
 source install/setup.bash
 python3 -c "from ros_dialogue.lekiwi_tool import run_lekiwi_skill; print('OK')"
+python3 -c "from ros_dialogue.education_bridge_node import TOOL_INFO; assert 'run_lekiwi_skill' in TOOL_INFO; print('OK')"
 ```
 
-Expected: `OK` 출력, 빌드 에러 없음
+Expected: 둘 다 `OK` 출력, 빌드 에러 없음
 
-- [ ] **Step 3: 커밋** (`robot_ws` 저장소, 이 저장소와 별개)
+- [ ] **Step 4: 커밋** (`robot_ws` 저장소, 이 저장소와 별개, `feature/lekiwi-pill-bottle`
+  브랜치)
 
 ```bash
 cd ~/robot_ws
-git add src/ros_dialogue/ros_dialogue/lekiwi_tool.py
-git commit -m "Add: pick_pill_bottle LLM 도구 선언 추가"
+git add src/ros_dialogue/ros_dialogue/lekiwi_tool.py src/ros_dialogue/ros_dialogue/education_bridge_node.py
+git commit -m "Add: pick_pill_bottle LLM 도구 선언 추가 + 대시보드 설명 등록"
 ```
 
 ---
 
 ## Task 15: robot_ws — `lekiwi_control.py` SKILL_MAP에 항목 추가 + 테스트
+
+**Task 14와 동일하게 `feature/lekiwi-pill-bottle` 브랜치에서 진행(`develop` 미변경).**
 
 **Files:**
 - Modify: `/home/roboseasy/robot_ws/src/ros_dialogue/ros_dialogue/lekiwi_control.py:61-67`
