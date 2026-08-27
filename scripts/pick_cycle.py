@@ -506,6 +506,12 @@ def main() -> None:
     p.add_argument('--result-file', default='',
                    help='집기 판정 결과를 이 경로에 JSON으로 남긴다(에이보 연동용)')
     args = p.parse_args()
+    # 이전 실행의 결과 파일이 남아 있으면, 이번 프로세스가 one_cycle 밖에서
+    # (ensure_servers 예외, import 에러, 강제 종료 등) 죽었을 때 워처가 그걸
+    # 갓 나온 success 로 오독한다. 시작하자마자 지워서 "결과 파일 없음"이
+    # 명확히 "끝나기 전에 죽음"(-> crashed)을 뜻하게 한다.
+    if args.result_file:
+        Path(args.result_file).unlink(missing_ok=True)
     # 아래 함수들이 모듈 상수를 쓰므로, 넘겨받은 값으로 한 번에 갱신한다.
     globals()['LEKIWI_HOST'] = args.lekiwi_host
 
