@@ -1,8 +1,13 @@
 # LeKiwi 약통 픽업 데모
 
+> ⚠️ **정본 아님 (아카이브)** — 이 파이프라인은 2026-08-31부터
+> [`yeon-03/llm_lekiwi_robot`](https://github.com/yeon-03/llm_lekiwi_robot)의
+> `lekiwi_pill_pickup/` 폴더에 `git subtree`로 통합되어 그쪽이 정본이다.
+> 이 저장소는 처음 분리 개발했던 기록으로 남긴다 — 새 작업은 `llm_lekiwi_robot`에서.
+
 공학경진대회 제출용 데모 — 음성 명령으로 LeKiwi가 책상 위 약통을 찾아 집는 파이프라인.
 
-에이보(별도 저장소 `robot_ws`)와 SSH로 연동된다. 설계 문서:
+에이보(별도 저장소 `A-Bo_project`)와 SSH로 연동된다. 설계 문서:
 `docs/superpowers/specs/2026-08-12-lekiwi-pill-pickup-design.md`
 
 ## 설치
