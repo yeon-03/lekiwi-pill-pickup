@@ -1,0 +1,11 @@
+{
+  "theta_to_reduce_mid_off": -1.0,
+  "y_to_grow_left": 1.0,
+  "x_forward": 1.0,
+  "measured": {
+    "d_theta_px": 93.0,
+    "d_balance": 46.5,
+    "d_gapsum_px": -21.0
+  },
+  "note": "approach_board.py 가 기동 시 읽어 부호로 쓴다"
+}

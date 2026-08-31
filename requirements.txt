@@ -1,0 +1,18 @@
+# 코어 — 색상 검출·시차 보정·좌표 변환 (color_detect.py, parallax.py,
+# pixel_to_base.py, approach_board.py 등). 이것만 있으면 pytest 통과 + 정지영상 분석 가능.
+numpy>=1.24
+opencv-python>=4.8
+scipy>=1.10
+
+# 테스트
+pytest>=7.0
+
+# --- 아래는 옵션 (기본 파이프라인엔 불필요) ---
+
+# 실제 LeKiwi 로봇 연결 시에만 필요 (robot_link.py, robot_bridge.py, live_view_color.py).
+# LeKiwi 라즈베리파이의 ~/lerobot_venv 와 같은 버전을 쓰는 것을 권장한다.
+# lerobot
+
+# YOLO 실험 스크립트(live_view_yolo.py, live_view_usb_yolo.py, detector.load_model_and_detect)
+# 에서만 사용. 기본 집기 경로는 색상 검출이라 불필요.
+# ultralytics

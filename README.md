@@ -5,6 +5,47 @@
 에이보(별도 저장소 `robot_ws`)와 SSH로 연동된다. 설계 문서:
 `docs/superpowers/specs/2026-08-12-lekiwi-pill-pickup-design.md`
 
+## 설치
+
+```bash
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+```
+
+`requirements.txt`의 코어(numpy/opencv/scipy)만 있으면 테스트와 정지영상 분석이 된다.
+실제 로봇을 붙이려면 `lerobot`이 추가로 필요하다(LeKiwi 라즈베리파이의 `~/lerobot_venv`와
+같은 버전). YOLO 실험 스크립트는 `ultralytics`가 있어야 한다. 둘 다 `requirements.txt`에
+주석으로 표시돼 있다.
+
+## 구성
+
+집기 파이프라인(색상 검출 기반, YOLO 아님):
+
+- `scripts/pick_cycle.py` — 집기 1사이클 엔트리(`--color`, 결과 JSON `--result-file`)
+- `scripts/color_detect.py` — HSV 임계값 + 형태학 연산 + 윤곽/연결요소 분석 기반 색상 블롭 검출
+- `scripts/approach_board.py` — 2단계 시각 서보 접근(베이스캠 색상 → 고정캠 흰 마커) + 프레임
+  가장자리에서 실패 시 개루프 넛지(`approach_state()` 포함)
+- `scripts/align_and_grasp.py` — 정렬 후 파지
+- `scripts/robot_bridge.py` / `scripts/robot_link.py` — LeKiwi ZMQ 단일 연결 관리 + Unix 소켓
+  멀티플렉싱(`RobotLink`)
+- `scripts/fixed_cam_server.py` — 고정캠(상단 부감) 프레임 제공
+- `scripts/parallax.py`, `src/lekiwi_pill_pickup/pixel_to_base.py`,
+  `src/lekiwi_pill_pickup/sideways_nudge.py`, `src/lekiwi_pill_pickup/undistort.py` —
+  시차 보정·픽셀↔베이스 좌표 변환·개루프 넛지 계획·왜곡 보정
+- `src/lekiwi_pill_pickup/pick_result.py` — 집기 판정 결과 파일 읽기/쓰기(에이보 연동용)
+- `config/*.json` — 캘리브레이션 값(시차 계수, 넛지 펄스 수, 베이스 부호)
+- `scripts/calibrate_*.py`, `scripts/teach_pose.py`, `scripts/goto_pose.py` — 캘리브레이션·포즈 도구
+- `docs/HANDOFF_2026-08-27.md`, `docs/grasp_plan_white_marker.md` — 인수인계·파지 계획(실측 결과 포함)
+
+그 외 `scripts/`의 `*_step1.py`, `*_loop.py`, `spike_*.sh`, `live_view_*` 등은 개발 중
+실험/디버그 스크립트다.
+
+## 테스트
+
+```bash
+pytest -q
+```
+
 ## 카메라 미리보기 켜기/끄기
 
 카메라가 두 종류다 — 헷갈리지 않게 구분할 것:

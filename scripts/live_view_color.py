@@ -13,15 +13,18 @@ from lerobot.robots.lekiwi import LeKiwiClient, LeKiwiClientConfig
 sys.path.insert(0, str(__import__('pathlib').Path(__file__).parent))
 from color_detect import COLOR_RANGES, find_color_blobs  # noqa: E402
 
-DRAW = {'red': (0, 0, 255), 'yellow': (0, 200, 255),
-        'green': (0, 255, 0), 'blue': (255, 0, 0), 'white': (200, 200, 200)}
+DRAW = {'red': (0, 0, 255),
+        'green': (0, 255, 0), 'blue': (255, 0, 0), 'white': (200, 200, 200),
+        'purple': (255, 0, 255)}
 
 
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument('--lekiwi-host', default='192.168.0.201')
     p.add_argument('--camera', choices=('wrist', 'front'), default='wrist')
-    p.add_argument('--colors', nargs='*', default=list(COLOR_RANGES))
+    # purple(집게)은 정렬 로직 전용 — 화면 표시 기본값에선 제외
+    p.add_argument('--colors', nargs='*',
+                   default=[c for c in COLOR_RANGES if c != 'purple'])
     p.add_argument('--min-area', type=int, default=150)
     args = p.parse_args()
 

@@ -22,8 +22,14 @@ from lekiwi_pill_pickup.pick_state_machine import (
 from lekiwi_pill_pickup.servo_control import compute_alignment_error, is_aligned
 
 # --- Task 3/4/11 실측 결과로 채울 상수 (현재 자리표시 값) ---
-FOCAL_LENGTH_PX = 800.0          # Task 4 캘리브레이션 결과로 교체
-TARGET_HEIGHT_CM = 10.0          # 약통 실제 높이(cm) — 실측해서 교체
+# Task 4 완료(2026-08-24, 손목카메라). 49.5cm 실측 + YOLO 박스 픽셀높이 89px 기준.
+# ⚠️ 체커보드 정밀 캘리브레이션은 fx=636/fy=664가 나왔지만, 그 값을 쓰면 같은 사진에서
+# 거리가 57~60cm로 8~10cm 틀린다(실측 검증). 이유는 우리가 재는 게 순수 광학 초점거리가
+# 아니라 "YOLO 박스 높이 <-> 실제 병 높이" 관계이기 때문 — 박스가 병을 딱 맞게 감싸지
+# 않는 오차까지 흡수한 실용 보정값이라 이쪽이 맞다. 체커보드 결과는
+# data/calib_wrist/camera_calib.npz에 별도 보관(왜곡 보정용).
+FOCAL_LENGTH_PX = 550.7
+TARGET_HEIGHT_CM = 8.0           # 약통 실제 높이(cm) — 실측 완료(2026-08-24, 32x23x80mm 제품)
 TARGET_DISTANCE_CM = 15.0        # 그립을 시도할 목표 거리 — 실기기 튜닝
 EMPTY_CLOSE_LOAD = 100           # Task 3 실측 결과로 교체
 GRIP_LOAD_MARGIN = 50            # Task 3 실측 결과로 교체

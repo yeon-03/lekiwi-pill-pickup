@@ -9,11 +9,12 @@ from pathlib import Path
 import cv2
 
 sys.path.insert(0, str(Path(__file__).parent))
-from color_detect import COLOR_RANGES, find_color_blobs  # noqa: E402
+from color_detect import COLOR_RANGES, find_color_blobs, find_white_marker  # noqa: E402
 from test_bottle_color import classify_color  # noqa: E402
 
-DRAW = {'red': (0, 0, 255), 'yellow': (0, 200, 255),
-        'green': (0, 255, 0), 'blue': (255, 0, 0), 'white': (200, 200, 200)}
+DRAW = {'red': (0, 0, 255),
+        'green': (0, 255, 0), 'blue': (255, 0, 0), 'white': (200, 200, 200),
+        'purple': (255, 0, 255)}
 
 # 자동 화이트밸런스를 켜두면 검은 보드가 조명에 따라 파란색으로 왜곡되어
 # 찍히는 문제를 실측으로 확인함(2026-08-25) — 색상검출 전에 반드시 고정할 것.
@@ -32,9 +33,16 @@ DEFAULT_ROI = (110, 90, 410, 390)
 # 낮추면 완전히 날아간(흰색) 픽셀이 크게 줄어듦(같은 지점 기준 503->63개).
 # 노출을 너무 낮추면 화면 전체가 어두워지므로 8000이 밝기/글레어 절충값.
 # 이 카메라 실제 허용 범위(v4l2-ctl --list-ctrls): exposure_time_absolute 0~10000.
-EXPOSURE_MIN = 0
+# 하한을 0으로 두면 키를 몇 번 잘못 눌렀을 때 화면이 완전 암흑이 되어
+# "카메라가 멈춘 것처럼" 보인다(2026-08-25 실제로 겪음) — 실사용 하한을 둔다.
+EXPOSURE_MIN = 1000
 EXPOSURE_MAX = 10000
 EXPOSURE_DEFAULT = 8000
+
+# 팔이 data/poses.json의 search_pose 자세일 때 실측으로 확인한, 벌어진 집게
+# 손가락 끝 사이(물체를 물게 될 지점)의 화면 좌표(2026-08-25) — 화면 정중앙이
+# 아니라 집게가 실제로 잡히는 지점을 기준점으로 삼는다. 자세가 바뀌면 다시 잴 것.
+GRIPPER_CENTER_DEFAULT = (355, 250)
 
 
 def fix_white_balance(index: int, temperature: int) -> None:
@@ -83,7 +91,10 @@ def draw_grid(frame, step: int = 50) -> None:
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument('--index', type=int, default=0, help='/dev/videoN 의 N')
-    p.add_argument('--colors', nargs='*', default=list(COLOR_RANGES))
+    # purple(집게)은 정렬 로직에서만 쓰고 화면 표시 기본값에선 뺀다 — 약통이
+    # 아니라 로봇 자기 자신이라 박스가 뜨면 오히려 헷갈림
+    p.add_argument('--colors', nargs='*',
+                   default=[c for c in COLOR_RANGES if c != 'purple'])
     p.add_argument('--min-area', type=int, default=150)
     p.add_argument('--no-color', action='store_true', help='색상검출 없이 원본만 보기')
     p.add_argument('--no-wb-fix', action='store_true', help='화이트밸런스 자동고정 끄기')
@@ -107,6 +118,14 @@ def main() -> None:
     p.add_argument('--yolo', action='store_true',
                    help='색상검출 대신 YOLO(bottle) + 색상판정으로 검출')
     p.add_argument('--yolo-conf', type=float, default=0.25, help='YOLO confidence threshold')
+    p.add_argument('--no-crosshair', action='store_true',
+                   help='십자선 끄기')
+    p.add_argument('--no-marker', action='store_true',
+                   help='흰 스티커 실시간 추적 끄기(고정 좌표 십자선만 사용)')
+    p.add_argument('--crosshair-at', type=int, nargs=2, default=list(GRIPPER_CENTER_DEFAULT),
+                   metavar=('X', 'Y'),
+                   help=f'십자선 기준점(화면 중앙 아니라 집게 사이 지점), '
+                        f'기본 {GRIPPER_CENTER_DEFAULT}(search_pose 기준 실측값)')
     args = p.parse_args()
 
     yolo_model = None
@@ -184,7 +203,22 @@ def main() -> None:
                         cv2.putText(view, f'{color} {area}', (x1, max(0, y1 - 6)),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, DRAW[color], 2)
 
-            cv2.putText(frame, f'WB {wb_temp}K  EXP {exposure}  ROI {rx},{ry},{rw},{rh}',
+            # 손목 흰 스티커(집게가 내려갈 지점의 대리표식)를 실시간 추적해
+            # 십자선을 그 위치에 그린다. 못 찾으면 --crosshair-at 고정값으로 폴백.
+            marker = None if args.no_marker else find_white_marker(frame)
+            if not args.no_crosshair:
+                if marker is not None:
+                    cx, cy = int(marker[0]), int(marker[1])
+                    color = (0, 255, 255)
+                else:
+                    cx, cy = args.crosshair_at
+                    color = (0, 0, 255)
+                cv2.line(frame, (0, cy), (fw, cy), color, 1)
+                cv2.line(frame, (cx, 0), (cx, fh), color, 1)
+                cv2.circle(frame, (cx, cy), 12, color, 2)
+
+            marker_txt = f'MARKER {int(marker[0])},{int(marker[1])}' if marker else 'MARKER 미검출'
+            cv2.putText(frame, f'WB {wb_temp}K  EXP {exposure}  {marker_txt}',
                         (5, frame.shape[0] - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             cv2.imshow(window, frame)
