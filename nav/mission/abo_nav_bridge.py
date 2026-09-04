@@ -208,9 +208,15 @@ class AboNav(Node):
     def _wp(self, name):
         return self.wp.get(name) or self.wp.get(str(name).lower())
 
-    def relocalize(self, at=None, state="returning"):
+    def relocalize(self, at=None, state="returning", moved=False):
         """pick 중 오도메트리가 끊겼으므로 라이다로 위치를 회복한다.
-        Nav2 는 내리지 않는다 -- AMCL 은 실행 중에 /initialpose 를 받는다."""
+        Nav2 는 내리지 않는다 -- AMCL 은 실행 중에 /initialpose 를 받는다.
+
+        moved=True 는 '기준점을 준 뒤 로봇이 그로부터 움직였다'는 뜻이다.
+        pick 이 그렇다 -- align_base 로 게걸음/회전/전진을 하고, 가운데
+        병에서 목표 병으로 옆걸음까지 한다. 그 이동은 오도메트리에 전혀
+        남지 않으므로(버스를 양보한 동안 바퀴를 못 읽는다) 라이다로만
+        회복할 수 있고, 따라서 도착 직후보다 넓게 훑어야 한다."""
         mp = os.path.expanduser(self.reloc_map) if self.reloc_map else ""
         if not mp or not os.path.exists(mp):
             self.get_logger().warn("재정합할 지도를 모르겠다. 건너뛴다.")
@@ -219,8 +225,9 @@ class AboNav(Node):
         # 기준점을 goal 좌표로 준다.  Nav2 의 도착 허용오차 안에 있으므로
         # 좁은 범위만 훑으면 되고, 흐트러진 AMCL 추정에 끌려가지 않는다.
         if at:
+            rng, yaw = ("0.80", "40") if moved else ("0.35", "20")
             extra = ["--at", f"{at['x']:.4f}", f"{at['y']:.4f}",
-                     f"{at.get('yaw', 0.0):.2f}", "--range", "0.35", "--yaw", "20"]
+                     f"{at.get('yaw', 0.0):.2f}", "--range", rng, "--yaw", yaw]
         else:
             extra = ["--range", "0.8", "--yaw", "40"]
         # 재정합은 '있으면 좋은' 단계다. 실패해도 AMCL 은 계속 추적하므로
@@ -301,7 +308,8 @@ class AboNav(Node):
         if not msg.data:
             self.mission = None
             return self.say("물건을 집지 못했어요.", "failed")
-        self.relocalize(at=self._wp(self.mission["target"]))
+        # pick 이 베이스를 움직였다. 넓게 훑어야 한다 (moved=True 주석 참고).
+        self.relocalize(at=self._wp(self.mission["target"]), moved=True)
         rt = self.mission["return_to"]
         pt = self.mission["return_pt"]
         self.mission["phase"] = "returning"
