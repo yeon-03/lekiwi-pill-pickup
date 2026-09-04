@@ -1,0 +1,448 @@
+# Nav2 파라미터 -- LeKiwi (3륜 옴니, Raspberry Pi 4 4코어)
+#
+# 기본 nav2_params.yaml 에서 이 기체에 맞게 고친 부분에는 근거를 달아두었다.
+# 실측 기구학 상한 (max_raw=1500, WHEEL_R=0.05, BASE_R=0.13647):
+#   vx 0.133 m/s   vy 0.115 m/s   wz 0.843 rad/s
+# Nav2 에는 여기서 25% 여유를 남긴 값을 준다. 상한에 붙여두면 병진과 회전을
+# 동시에 낼 때 베이스 노드가 세 바퀴를 비례 축소해 실제 속도가 명령보다
+# 작아지고, MPPI 의 내부 모델이 실제와 어긋난다.
+
+amcl:
+  ros__parameters:
+    use_sim_time: false
+    base_frame_id: "base_footprint"
+    odom_frame_id: "odom"
+    global_frame_id: "map"
+    scan_topic: scan
+    # 옴니 로봇은 횡이동을 하므로 차동구동 모델을 쓰면 파티클이 잘못 퍼진다.
+    robot_model_type: "nav2_amcl::OmniMotionModel"
+    laser_model_type: "likelihood_field"
+    # alpha1~3 은 회전/병진 상호 노이즈, alpha4 는 횡방향, alpha5 는 옴니 전용.
+    # 옴니휠은 미끄러짐이 있어 기본값보다 약간 크게 잡았다.
+    alpha1: 0.2
+    alpha2: 0.2
+    alpha3: 0.2
+    alpha4: 0.2
+    alpha5: 0.2
+    # 방이 4.5 m 라 12 m 까지 볼 필요가 없다. 멀리 볼수록 계산만 늘어난다.
+    laser_max_range: 6.0
+    laser_min_range: 0.21          # 라이다 노드의 self_radius 와 일치
+    max_beams: 120
+    # [2026-08-26] 초기 수렴을 돕기 위해 파티클을 늘렸다. 실무 권고는 시작 시
+    # 많이 쓰고 수렴 후 줄이는 것인데, AMCL 이 스스로 KLD 로 개수를 조절하므로
+    # 상한만 올려두면 된다. 이 방은 대칭성이 높아 가설이 여러 개 살아남는다.
+    max_particles: 5000
+    min_particles: 1000
+    # 느린 로봇(0.1 m/s)이라 기본 0.25 m / 0.2 rad 이면 갱신이 너무 뜸하다.
+    update_min_d: 0.10
+    update_min_a: 0.15
+    resample_interval: 1
+    transform_tolerance: 0.5
+    recovery_alpha_slow: 0.001     # 기본 0.0 은 자가 복구를 아예 끈다
+    recovery_alpha_fast: 0.1
+    do_beamskip: false
+    tf_broadcast: true
+    # 반드시 true 여야 한다. false 로 두면 AMCL 이 초기 위치를 받기 전까지
+    # map->odom TF 를 내보내지 않고, global_costmap 이 활성화에 실패해
+    # lifecycle_manager 가 navigation 전체 기동을 중단시킨다 (RViz 로 위치를
+    # 찍어줄 틈도 없이 타임아웃된다).
+    # (0,0,0) 은 카토그래퍼가 매핑을 시작한 지점이다. 로봇을 그 근처에 두고
+    # 시작한 뒤, 어긋나면 RViz 의 2D Pose Estimate 로 보정하면 된다.
+    set_initial_pose: true
+    initial_pose:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      yaw: 0.0
+
+map_server:
+  ros__parameters:
+    use_sim_time: false
+    yaml_filename: ""
+
+map_saver:
+  ros__parameters:
+    use_sim_time: false
+    save_map_timeout: 10.0
+    free_thresh_default: 0.196
+    occupied_thresh_default: 0.65
+
+bt_navigator:
+  ros__parameters:
+    use_sim_time: false
+    global_frame: map
+    robot_base_frame: base_link
+    odom_topic: /odom
+    bt_loop_duration: 10
+    default_server_timeout: 20
+    navigators: ["navigate_to_pose", "navigate_through_poses"]
+    navigate_to_pose:
+      plugin: "nav2_bt_navigator::NavigateToPoseNavigator"
+    navigate_through_poses:
+      plugin: "nav2_bt_navigator::NavigateThroughPosesNavigator"
+
+controller_server:
+  ros__parameters:
+    use_sim_time: false
+    # Pi 4 에서 MPPI 를 20 Hz 로 돌리기는 버겁다. 로봇이 0.1 m/s 로 느리므로
+    # 10 Hz 로도 제어 간격당 1 cm 밖에 안 움직인다. 충분하다.
+    controller_frequency: 5.0   # Pi4 CPU 부족으로 10Hz 를 못 맞춘다(실측 7.7Hz)
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.001
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.3
+    progress_checker_plugins: ["progress_checker"]
+    goal_checker_plugins: ["general_goal_checker"]
+    controller_plugins: ["FollowPath"]
+
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      # 기본 0.5 m / 10 s 는 0.1 m/s 로봇에게 가혹하다. 회전만 하는 구간에서
+      # 곧바로 실패로 판정된다.
+      required_movement_radius: 0.15
+      movement_time_allowance: 30.0
+
+    general_goal_checker:
+      stateful: true
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.10
+      yaw_goal_tolerance: 0.20
+
+    FollowPath:
+      plugin: "nav2_mppi_controller::MPPIController"
+      # --- 연산량: Pi 4 4코어에 맞춰 축소 (기본 2000 x 56) ---
+      batch_size: 400   # MPPI 비용 축소
+      time_steps: 35
+      model_dt: 0.2   # controller_frequency 5Hz 와 일치
+      iteration_count: 1
+      # --- 옴니 ---
+      motion_model: "Omni"       # 기본 DiffDrive 면 vy 가 통째로 무시된다
+      # --- 속도: 실측 상한의 75% ---
+      vx_max: 0.10
+      vx_min: -0.10              # 옴니는 후진 페널티가 없다
+      vy_max: 0.08
+      # [3번] 스캔 왜곡 억제. 라이다 1회전이 164 ms 이므로 회전 중에는 그동안의
+      # 각변위만큼 스캔이 뒤틀린다. AMCL 은 카토그래퍼와 달리 이 왜곡을 보정하지
+      # 않는다. 0.60 이면 스캔당 5.6도(1 m 벽에서 9.8 cm) 밀리는데, 0.25 로
+      # 낮추면 2.3도(4.0 cm)로 줄어든다. 병진 왜곡은 1.6 cm 라 문제되지 않는다.
+      wz_max: 0.25
+      # 탐색 노이즈도 속도에 비례해 줄인다. 기본값(0.2/0.2/0.4)은 상한보다 커서
+      # 표본 대부분이 제약에 걸려 버려진다.
+      vx_std: 0.05
+      vy_std: 0.04
+      wz_std: 0.10
+      ax_max: 0.5
+      ax_min: -0.5
+      ay_max: 0.5
+      ay_min: -0.5
+      az_max: 0.8
+      prune_distance: 1.0        # 방이 4.5 m 라 기본 1.7 은 과하다
+      transform_tolerance: 0.2
+      temperature: 0.3
+      gamma: 0.015
+      visualize: false           # Pi 4 부하를 아낀다
+      regenerate_noises: true
+      TrajectoryVisualizer:
+        trajectory_step: 5
+        time_step: 3
+      # PreferForwardCritic 은 제외했다 -- 옴니 로봇은 "앞"이라는 선호 방향이
+      # 없고, 이 크리틱이 있으면 옆으로 가면 될 상황에서 굳이 회전한다.
+      # TwirlingCritic 을 대신 넣어 목적 없는 제자리 회전을 막는다.
+      critics: [
+        "ConstraintCritic", "CostCritic", "GoalCritic",
+        "GoalAngleCritic", "PathAlignCritic", "PathFollowCritic",
+        "PathAngleCritic", "TwirlingCritic"]
+      ConstraintCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+      GoalCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 0.7
+      GoalAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.0
+        threshold_to_consider: 0.5
+      PathAlignCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 14.0
+        max_path_occupancy_ratio: 0.05
+        trajectory_point_step: 3
+        threshold_to_consider: 0.5
+        offset_from_furthest: 20
+        use_path_orientations: false
+      PathFollowCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        offset_from_furthest: 5
+        threshold_to_consider: 0.7
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 2.0
+        offset_from_furthest: 4
+        threshold_to_consider: 0.5
+        max_angle_to_furthest: 1.0
+        mode: 0
+      TwirlingCritic:
+        enabled: true
+        twirling_cost_power: 1
+        twirling_cost_weight: 10.0
+      CostCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.81
+        critical_cost: 300.0
+        consider_footprint: false
+        collision_cost: 1000000.0
+        near_goal_distance: 1.0
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      use_sim_time: false
+      update_frequency: 5.0
+      publish_frequency: 2.0
+      global_frame: odom
+      robot_base_frame: base_link
+      rolling_window: true
+      # 방이 4.5 m 이고 로봇이 느리다. 기본 3x3 보다 작게 잡아 Pi 4 부하를 줄인다.
+      width: 3
+      height: 3
+      resolution: 0.05
+      robot_radius: 0.18          # 바퀴 최외곽 실측 0.158 m + 여유
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      # StaticLayer 를 로컬에도 넣는 이유: 옴니 바퀴가 라이다 시야의 30.4%
+      # (36도 구간 3개)를 가려서, 그 방향의 장애물은 실시간으로 감지되지 않는다.
+      # 지도에 기록된 장애물이라도 남겨두어야 그쪽으로 밀고 들어가지 않는다.
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: true
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: scan
+        scan:
+          topic: /scan
+          sensor_frame: lidar_link
+          data_type: "LaserScan"
+          # 라이다 실측 최대 8.75 m 이지만 방이 4.5 m 다. 멀리 지우려 하면
+          # 미탐색 방향을 과하게 비운다 (카토그래퍼에서 겪은 문제와 동일).
+          obstacle_max_range: 3.0
+          obstacle_min_range: 0.21
+          raytrace_max_range: 3.5
+          raytrace_min_range: 0.21
+          max_obstacle_height: 2.0
+          min_obstacle_height: 0.0
+          clearing: true
+          marking: true
+          inf_is_valid: false
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 3.0
+        # [2026-08-27] 0.40 -> 0.22. 이 방은 통로가 좁아 0.40 이면 팽창만으로
+        # 통로가 완전히 막힌다. 실측: 빈 공간 1704 셀 중 통행가능 1188, 그마저
+        # 조각나서 로봇이 도달할 수 있는 곳이 283 셀뿐이었다.
+        # 로봇 반경 0.18 + 여유 0.04 로 잡는다.
+        inflation_radius: 0.22
+      always_send_full_costmap: true
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      use_sim_time: false
+      update_frequency: 1.0
+      publish_frequency: 1.0
+      global_frame: map
+      robot_base_frame: base_link
+      resolution: 0.05
+      robot_radius: 0.18
+      track_unknown_space: true
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: true
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: scan
+        scan:
+          topic: /scan
+          sensor_frame: lidar_link
+          data_type: "LaserScan"
+          obstacle_max_range: 3.0
+          obstacle_min_range: 0.21
+          raytrace_max_range: 3.5
+          raytrace_min_range: 0.21
+          max_obstacle_height: 2.0
+          min_obstacle_height: 0.0
+          clearing: true
+          marking: true
+          inf_is_valid: false
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.22
+      always_send_full_costmap: true
+
+planner_server:
+  ros__parameters:
+    use_sim_time: false
+    expected_planner_frequency: 1.0
+    planner_plugins: ["GridBased"]
+    GridBased:
+      plugin: "nav2_navfn_planner::NavfnPlanner"
+      tolerance: 0.25
+      use_astar: false
+      # [2026-08-27] false -> true. 방 안쪽 미탐색은 7.4% 뿐이지만 전부 벽
+      # 안쪽 가장자리에 얇게 붙어 있다(라이다가 원리적으로 볼 수 없는 곳).
+      # false 로 두면 그 테두리가 벽처럼 작동해 통로를 더 좁혀 계획이 실패한다.
+      allow_unknown: true
+
+smoother_server:
+  ros__parameters:
+    use_sim_time: false
+    smoother_plugins: ["simple_smoother"]
+    simple_smoother:
+      plugin: "nav2_smoother::SimpleSmoother"
+      tolerance: 1.0e-10
+      max_its: 1000
+      do_refinement: true
+
+behavior_server:
+  ros__parameters:
+    use_sim_time: false
+    local_costmap_topic: local_costmap/costmap_raw
+    global_costmap_topic: global_costmap/costmap_raw
+    local_footprint_topic: local_costmap/published_footprint
+    global_footprint_topic: global_costmap/published_footprint
+    cycle_frequency: 10.0
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
+    spin:
+      plugin: "nav2_behaviors::Spin"
+    backup:
+      plugin: "nav2_behaviors::BackUp"
+    drive_on_heading:
+      plugin: "nav2_behaviors::DriveOnHeading"
+    wait:
+      plugin: "nav2_behaviors::Wait"
+    local_frame: odom
+    global_frame: map
+    robot_base_frame: base_link
+    transform_tolerance: 0.2
+    # 복구 동작도 기체 성능에 맞춰야 한다. 기본값(1.0 rad/s)은 상한 0.84 를 넘는다.
+    max_rotational_vel: 0.25
+    min_rotational_vel: 0.2
+    rotational_acc_lim: 0.6
+
+velocity_smoother:
+  ros__parameters:
+    use_sim_time: false
+    smoothing_frequency: 10.0
+    scale_velocities: false
+    feedback: "OPEN_LOOP"
+    # 가운데가 vy. 기본값 0.0 이면 옴니 로봇의 횡이동이 통째로 죽는다.
+    # [1번,3번] 마지막 관문. 컨트롤러가 뭘 내놓든 여기서 잘린다.
+    # 회전 상한을 0.25 로 낮춰 스캔 왜곡을 억제하고, 위치추정이 흔들릴 때
+    # 로봇이 빠르게 벽으로 돌진하지 않도록 가속도도 함께 낮춘다.
+    max_velocity: [0.08, 0.06, 0.25]
+    min_velocity: [-0.08, -0.06, -0.25]
+    max_accel: [0.3, 0.3, 0.6]
+    max_decel: [-0.3, -0.3, -0.6]
+    odom_topic: "odom"
+    odom_duration: 0.1
+    deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 1.0
+
+collision_monitor:
+  ros__parameters:
+    use_sim_time: false
+    base_frame_id: "base_footprint"
+    odom_frame_id: "odom"
+    cmd_vel_in_topic: "cmd_vel_smoothed"
+    cmd_vel_out_topic: "cmd_vel"
+    state_topic: "collision_monitor_state"
+    transform_tolerance: 0.2
+    source_timeout: 1.0
+    base_shift_correction: true
+    stop_pub_timeout: 2.0
+    polygons: ["FootprintApproach"]
+    FootprintApproach:
+      type: "polygon"
+      action_type: "approach"
+      footprint_topic: "/local_costmap/published_footprint"
+      time_before_collision: 1.5
+      simulation_time_step: 0.1
+      min_points: 6
+      visualize: false
+      enabled: true
+    observation_sources: ["scan"]
+    scan:
+      type: "scan"
+      topic: /scan
+      enabled: true
+
+waypoint_follower:
+  ros__parameters:
+    use_sim_time: false
+    loop_rate: 20
+    stop_on_failure: false
+    action_server_result_timeout: 900.0
+    waypoint_task_executor_plugin: "wait_at_waypoint"
+    wait_at_waypoint:
+      plugin: "nav2_waypoint_follower::WaitAtWaypoint"
+      enabled: true
+      waypoint_pause_duration: 200
+
+# docking_server -- 이 로봇에는 충전 도크가 없지만 반드시 있어야 한다.
+# nav2_bringup 의 navigation_launch.py 는 lifecycle_nodes 목록을 코드에
+# 하드코딩하고(245행) params 보다 나중에 덮어쓰므로, 목록에서 뺄 수가 없다.
+# 설정이 없으면 "Charging dock plugins not given!" 으로 configure 에 실패하고
+# lifecycle_manager 가 navigation 전체 기동을 중단시킨다.
+# 기본값을 그대로 두되 속도만 이 기체 상한(vx 0.133 m/s)에 맞춘다.
+docking_server:
+  ros__parameters:
+    use_sim_time: false
+    controller_frequency: 10.0
+    initial_perception_timeout: 5.0
+    wait_charge_timeout: 5.0
+    dock_approach_timeout: 30.0
+    undock_linear_tolerance: 0.05
+    undock_angular_tolerance: 0.1
+    max_retries: 3
+    base_frame: "base_link"
+    fixed_frame: "odom"
+    dock_backwards: false
+    dock_prestaging_tolerance: 0.5
+    dock_plugins: ['simple_charging_dock']
+    simple_charging_dock:
+      plugin: 'opennav_docking::SimpleChargingDock'
+      docking_threshold: 0.05
+      staging_x_offset: -0.7
+      use_external_detection_pose: true
+      use_battery_status: false
+      use_stall_detection: false
+      external_detection_timeout: 1.0
+      external_detection_translation_x: -0.18
+      external_detection_translation_y: 0.0
+      external_detection_rotation_roll: -1.57
+      external_detection_rotation_pitch: -1.57
+      external_detection_rotation_yaw: 0.0
+      filter_coef: 0.1
+    controller:
+      k_phi: 3.0
+      k_delta: 2.0
+      v_linear_min: 0.05
+      v_linear_max: 0.10
+      use_collision_detection: true
+      costmap_topic: "local_costmap/costmap_raw"
+      footprint_topic: "local_costmap/published_footprint"
+      transform_tolerance: 0.1
+      projection_time: 5.0
+      simulation_step: 0.1
+      dock_collision_threshold: 0.3

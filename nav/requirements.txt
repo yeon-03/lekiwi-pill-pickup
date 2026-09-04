@@ -1,0 +1,3 @@
+# 노트북에서 로봇으로 배포할 때만 필요하다 (nav/deploy/deploy_lekiwi.py).
+# 로봇 위에서 도는 것들은 ROS2 Jazzy 와 시스템 파이썬만 쓴다 -- 별도 설치 없음.
+paramiko>=3.0

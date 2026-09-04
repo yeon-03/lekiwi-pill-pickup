@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<!-- lekiwi06 실기용 최소 URDF.
+
+     값은 시뮬 씬(assets/scenes/test_lekiwi.usd)에서 base_link 기준 상대 변환을
+     그대로 뽑은 것이다. 시각화용 형상은 넣지 않는다 — 필요한 것은 TF 사슬뿐이고,
+     STL 을 얹으면 파이 부하만 늘어난다.
+
+     base_link 가 루트다. odom -> base_link 는 lekiwi_base_node.py 가 발행하므로,
+     base_footprint 를 루트로 두면 base_link 에 부모가 둘이 생겨 TF 가 깨진다.
+
+     lidar_link 의 회전은 0 이다. 라이다는 **물리적으로 뒤집혀** 달려 있지만,
+     YDLidar 의 원시 각도가 원래 시계방향 증가(ROS 는 반시계가 양)라서 뒤집힘이
+     그 규약을 상쇄한다. 결과적으로 ydlidar_node.py 가 내보내는 /scan 각도는
+     이미 base_link 방위와 같으므로, 여기서 다시 뒤집으면 지도가 깨진다.
+     실측 근거: 회전 일관성 채점에서 정립 1230칸 vs 뒤집힘 5082칸 (4.13배).
+
+     요(yaw) = -30도. 회전 일관성 채점으로는 요를 못 정한다(라이다가 회전중심에
+     있어 요를 바꾸면 점구름이 통째로 강체 회전하는데, 칸 수 세기는 강체 회전에
+     불변이다). 대신 **바퀴 자기 반사**로 정했다: 옴니휠은 base 프레임에서
+     [150, -90, 30]도에 있는데 스캔에는 [180, -60, +60]도로 찍힌다. 세 개 모두
+     정확히 +30도 어긋나므로 scan 각도 = base 방위 + 30도, 즉 lidar_link 는
+     base_link 대비 -30도 회전이다.
+-->
+<robot name="lekiwi06">
+  <link name="base_link"/>
+  <link name="base_footprint"/>
+  <link name="lidar_link"/>
+  <link name="imu_link"/>
+
+  <joint name="base_link_to_base_footprint" type="fixed">
+    <parent link="base_link"/>
+    <child link="base_footprint"/>
+    <origin xyz="0 0 -0.055" rpy="0 0 0"/>
+  </joint>
+
+  <joint name="base_link_to_lidar_link" type="fixed">
+    <parent link="base_link"/>
+    <child link="lidar_link"/>
+    <origin xyz="0 0 -0.053" rpy="0 0 0"/>   <!-- 회전 없음. 직진 주행으로 검증 (LEKIWI_LIDAR_YAW=0.0 과 일치할 것) -->
+  </joint>
+
+  <joint name="base_link_to_imu_link" type="fixed">
+    <parent link="base_link"/>
+    <child link="imu_link"/>
+    <origin xyz="0 -0.055 0.020" rpy="0 0 0"/>
+  </joint>
+</robot>
