@@ -1,0 +1,205 @@
+# lekiwi06 Nav2 자율주행용 RViz 설정.
+#
+# lekiwi06_real.rviz 와 다른 점: SetInitialPose / SetGoal 도구가 들어있다.
+# 그게 없으면 AMCL 초기 위치를 찍을 수도, 목표를 보낼 수도 없다.
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded: ~
+      Splitter Ratio: 0.5
+  - Class: rviz_common/Views
+    Name: Views
+  - Class: rviz_common/Tool Properties
+    Name: Tool Properties
+Visualization Manager:
+  Class: ""
+  Name: root
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: map
+    Frame Rate: 30
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 1
+      Plane Cell Count: 20
+      Color: 80; 80; 80
+      Reference Frame: <Fixed Frame>
+      Value: true
+    - Class: rviz_default_plugins/Map
+      Name: Map
+      Enabled: true
+      # 로봇의 /map 은 TRANSIENT_LOCAL 이라 WiFi 너머로 늦게 붙으면 안 온다.
+      # map_view_publisher.py 가 데스크탑에서 같은 지도를 1 Hz 로 발행한다.
+      Topic:
+        Value: /map_view
+        Depth: 1
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+        History Policy: Keep Last
+      Alpha: 0.7
+      Color Scheme: map
+      Draw Behind: true
+      Value: true
+    - Class: rviz_default_plugins/Map
+      Name: GlobalCostmap
+      Enabled: false
+      Topic:
+        Value: /global_costmap/costmap
+        Depth: 1
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+        History Policy: Keep Last
+      Alpha: 0.4
+      Color Scheme: costmap
+      Draw Behind: false
+      Value: false
+    - Class: rviz_default_plugins/Map
+      Name: LocalCostmap
+      # 꺼둔다. 정합이 안 맞을 때 코스트맵이 지도를 덮어 벽이 안 보인다.
+      # 필요하면 Displays 패널에서 체크만 하면 된다.
+      Enabled: false
+      Topic:
+        Value: /local_costmap/costmap
+        Depth: 1
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+        History Policy: Keep Last
+      Alpha: 0.5
+      Color Scheme: costmap
+      Draw Behind: false
+      Value: false
+    - Class: rviz_default_plugins/RobotModel
+      Name: RobotModel
+      Enabled: true
+      Description Source: Topic
+      Description Topic:
+        Value: /robot_description
+        Depth: 5
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+        History Policy: Keep Last
+      Alpha: 0.8
+      Value: true
+    - Class: rviz_default_plugins/LaserScan
+      Name: LaserScan
+      Enabled: true
+      # 라이다 노드는 BEST_EFFORT 로 발행한다. Reliable 로 두면 QoS 불일치로
+      # 구독이 성립하지 않아 아무것도 안 보인다.
+      Topic:
+        Value: /scan
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+        History Policy: Keep Last
+      Style: Spheres
+      Size (m): 0.03
+      Color: 255; 60; 60
+      Color Transformer: FlatColor
+      Decay Time: 0
+      Position Transformer: XYZ
+      Value: true
+    - Class: nav2_rviz_plugins/ParticleCloud
+      Name: ParticleCloud
+      Enabled: true
+      Topic:
+        Value: /particle_cloud
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Best Effort
+        History Policy: Keep Last
+      Color: 0; 180; 255
+      Alpha: 1
+      Value: true
+    - Class: rviz_default_plugins/Path
+      Name: GlobalPlan
+      Enabled: true
+      Topic:
+        Value: /plan
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+        History Policy: Keep Last
+      Color: 0; 255; 0
+      Line Style: Lines
+      Alpha: 1
+      Value: true
+    - Class: rviz_default_plugins/Odometry
+      Name: Odometry
+      Enabled: true
+      Topic:
+        Value: /odom
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+        History Policy: Keep Last
+      Shape:
+        Value: Arrow
+        Color: 255; 200; 0
+        Alpha: 1
+        Shaft Length: 0.15
+        Shaft Radius: 0.02
+        Head Length: 0.06
+        Head Radius: 0.05
+      Position Tolerance: 0.05
+      Angle Tolerance: 0.05
+      Keep: 30
+      Covariance:
+        Value: false
+      Value: true
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      # 위치를 맞추는 동안은 켜두는 게 낫다. base_link 축이 스캔과 함께 돌아가는지
+      # 보면 라이다 장착각이 맞는지 눈으로도 짐작이 간다.
+      Enabled: true
+      Show Names: true
+      Show Axes: true
+      Show Arrows: false
+      Marker Scale: 0.4
+      Frame Timeout: 15
+      Value: true
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    # 이 두 개가 핵심이다.
+    - Class: rviz_default_plugins/SetInitialPose
+      Topic:
+        Value: /initialpose
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+        History Policy: Keep Last
+      covariance_x: 0.25
+      covariance_y: 0.25
+      covariance_yaw: 0.06853891909122467
+    - Class: rviz_default_plugins/SetGoal
+      Topic:
+        Value: /goal_pose
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+        History Policy: Keep Last
+    - Class: rviz_default_plugins/Measure
+      Line color: 128; 128; 0
+    - Class: rviz_default_plugins/FocusCamera
+  Views:
+    Current:
+      Class: rviz_default_plugins/TopDownOrtho
+      Name: Current View
+      Angle: 0
+      Scale: 80
+      Target Frame: <Fixed Frame>
+      X: 0
+      Y: 0
+      Invert Z Axis: false
+      Value: TopDownOrtho (rviz_default_plugins)
+    Saved: ~
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 1000
+  Width: 1400
+  Hide Left Dock: false
+  Hide Right Dock: true

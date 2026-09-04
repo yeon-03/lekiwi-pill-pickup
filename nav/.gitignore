@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+
+# Cartographer 내부 상태. 지도(.pgm/.yaml)에서 재생성 가능하고 수 MB 라 넣지 않는다.
+*.pbstream
