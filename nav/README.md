@@ -172,3 +172,4 @@ SD카드 하나에 로봇 하나이므로 번호가 정보를 더해주지 않�
 | [`bringup-guide.md`](../docs/nav/bringup-guide.md) | 처음 세팅하거나 새 기체로 옮길 때 |
 | [`slam-nav2-spec.md`](../docs/nav/slam-nav2-spec.md) | 구조와 파라미터 근거가 궁금할 때 |
 | [`troubleshooting.md`](../docs/nav/troubleshooting.md) | 안 될 때. 겪은 문제와 원인을 원인별로 정리 |
+| [`wifi-eduroam-setup.md`](../docs/nav/wifi-eduroam-setup.md) | 로봇을 학교 Wi-Fi 에 붙일 때 (랜선 → 무선 전환) |
