@@ -1,0 +1,9 @@
+# 로봇으로 그대로 전송되는 파일들이다. CRLF 가 섞이면 셸이 값 끝에 \r 을 붙여
+# LEKIWI_LIDAR_PORT="/dev/ttyUSB0\r" 같은 존재하지 않는 경로가 되고, 증상은
+# 한참 위층에서야 보인다 (실제로 lekiwi01 프로파일이 이랬다).
+*.sh    text eol=lf
+*.py    text eol=lf
+*.yaml  text eol=lf
+*.lua   text eol=lf
+*.urdf  text eol=lf
+*.rviz  text eol=lf

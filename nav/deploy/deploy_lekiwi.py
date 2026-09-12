@@ -144,6 +144,20 @@ ROS2 가 없으면 먼저:
 """
 
 
+# 로봇에서 셸이 읽는 파일에 CRLF 가 섞이면 값 끝에 \r 이 붙는다.
+# LEKIWI_LIDAR_PORT="/dev/ttyUSB0\r" 는 존재하지 않는 경로가 되고, 증상은
+# 한참 위층에서야 "라이다 없음" 으로 나타난다 (lekiwi01 프로파일이 실제로
+# 이랬다). 보내기 직전에 한 번 정규화한다.
+TEXT_EXT = (".sh", ".py", ".yaml", ".lua", ".urdf", ".rviz", ".txt", ".md")
+
+
+def to_unix(data, label):
+    if not label.endswith(TEXT_EXT) or b"\r\n" not in data:
+        return data
+    print(f"  [주의] {label} 이 CRLF 였다 -- LF 로 고쳐 보낸다")
+    return data.replace(b"\r\n", b"\n")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("target", help="대상 기체 이름 (예: lekiwi07) 또는 IP")
@@ -235,6 +249,7 @@ def main():
                 data = PROFILE.format(name=name).encode()
         else:
             data = open(s, "rb").read()
+        data = to_unix(data, remote)
         with sftp.file(remote, "wb") as fh:
             fh.write(data)
         if remote.endswith(".sh") or remote.endswith(".py"):

@@ -73,6 +73,49 @@ python nav/deploy/deploy_lekiwi.py lekiwi07
 전부 통과하면 다음 층으로. 자세한 절차·실패 대처는
 [`docs/nav/bringup-guide.md`](../docs/nav/bringup-guide.md).
 
+## 집기와 잇기
+
+로봇은 도착하면 `/abo/pick_request` 를 발행하고 `/abo/pick_done` 을 받아야
+복귀합니다. 그 사이를 `mission/pick_adapter.py` 가 잇습니다.
+
+**이 어댑터는 노트북에서 돕니다** — 집기 코드가 카메라 2대와 OpenCV 를 쓰고,
+ROS 를 전혀 모르기 때문입니다(집기 쪽 의존성에 `rclpy` 가 없다). 그래서 ROS 를
+아는 쪽은 이 파일 하나뿐이고, 집기 코드는 그대로 두면 됩니다.
+로봇에는 배포되지 않습니다(`deploy_lekiwi.py` 의 `SHARED` 에 없음).
+
+```bash
+# 노트북에서. 로봇과 같은 도메인이어야 토픽이 보인다.
+export ROS_DOMAIN_ID=42
+python3 nav/mission/pick_adapter.py \
+    --repo ~/lekiwi-pill-pickup \
+    --map center=green,left=red,right=blue \
+    --python ~/lekiwi-pill-pickup/.venv/bin/python
+```
+
+`--python` 은 집기를 실행할 인터프리터입니다. `rclpy` 가 있는 파이썬과
+집기 의존성(numpy/opencv/scipy/lerobot)이 있는 파이썬은 대개 다른
+환경이므로, 다르면 반드시 지정해야 합니다.
+
+제한시간은 로봇 쪽(`--pick-timeout`, 기본 180초)보다 짧게 두어야 합니다.
+그래야 로봇이 먼저 포기하지 않고 어댑터가 실패 이유를 보고합니다.
+
+### 로봇 없이 먼저 확인
+
+로봇을 잡기 전에 노트북에서만 검증할 수 있습니다. 가짜 `pick_cycle.py` 로
+성공·실패·중간에 죽음·제한시간 초과·중복 요청까지 돌려 봅니다.
+
+```bash
+python3 nav/tools/test_pick_adapter.py
+```
+
+로봇이 켜져 있어도 안전합니다 — 로봇(도메인 42)과 겹치지 않는 전용 도메인
+77 에서 돕니다. 여기까지 통과하면 ROS2 설치와 어댑터는 정상이고, 남은 것은
+두 가지뿐입니다.
+
+1. 노트북과 로봇이 서로 토픽을 보는가 — 양쪽 `ROS_DOMAIN_ID=42` 로 맞추고
+   `ros2 topic list` 에 `/abo/state` 가 뜨는지
+2. 진짜 `pick_cycle.py` 가 `--result-file` 에 결과를 쓰는가
+
 ## 새 기체에서 반드시 할 교정 3가지
 
 배포 직후 프로파일의 기계 상수는 전부 **미검증**(lekiwi06 값 복사본)이다.
@@ -105,7 +148,7 @@ ros2 launch ~/launch/lekiwi_lidar_test.launch.py
 |---|---|
 | `launch/` | 런치 8개. **이것이 정본 진입점**이다 |
 | `nodes/` | 라이다·IMU·베이스 드라이버 |
-| `mission/` | 위치 재정합(`refine_pose.py`), 왕복 미션 브리지(`abo_nav_bridge.py`) |
+| `mission/` | 위치 재정합(`refine_pose.py`), 왕복 미션 브리지(`abo_nav_bridge.py`), 집기 어댑터(`pick_adapter.py` — **노트북에서 실행**) |
 | `tools/` | 점검·교정·진단 (`check_config`, `odom_test`, `lidar_test`, `deadbeam` …) |
 | `config/` | URDF, Cartographer, Nav2 파라미터 |
 | `robots/<이름>/` | 그 기체에서 **실측한** 교정값 |
@@ -129,3 +172,4 @@ SD카드 하나에 로봇 하나이므로 번호가 정보를 더해주지 않�
 | [`bringup-guide.md`](../docs/nav/bringup-guide.md) | 처음 세팅하거나 새 기체로 옮길 때 |
 | [`slam-nav2-spec.md`](../docs/nav/slam-nav2-spec.md) | 구조와 파라미터 근거가 궁금할 때 |
 | [`troubleshooting.md`](../docs/nav/troubleshooting.md) | 안 될 때. 겪은 문제와 원인을 원인별로 정리 |
+| [`wifi-eduroam-setup.md`](../docs/nav/wifi-eduroam-setup.md) | 로봇을 학교 Wi-Fi 에 붙일 때 (랜선 → 무선 전환) |

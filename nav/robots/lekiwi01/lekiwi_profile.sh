@@ -21,7 +21,7 @@ export LEKIWI_WHEEL_SIGN="1 1 1"
 # 세 바퀴가 120도 간격이라 세 후보가 데이터와 똑같이 맞기 때문이다.
 # 확정하려면 직진 시험 한 번:
 #     ros2 launch ~/launch/lekiwi_lidar_test.launch.py
-# 여기를 바꾸면 lekiwi01.urdf 의 lidar joint rpy 와
+# 여기를 바꾸면 lekiwi.urdf 의 lidar joint rpy 와
 # launch/lekiwi_sensors.launch.py 의 DEFAULTS["lidar_yaw"] 도 같이 바꿀 것.
 # 세 곳이 어긋났는지는 lekiwi_setup.launch.py 가 점검한다.
 export LEKIWI_LIDAR_YAW="0.0"
@@ -34,8 +34,8 @@ export LEKIWI_WHEEL_BLIND="-59.5:41.0,-179.8:36.5,60.0:36.0"
 # --- 장치 -----------------------------------------------------------------
 export LEKIWI_LIDAR_PORT="/dev/ttyUSB0"
 export LEKIWI_SERVO_PORT="/dev/ttyACM0"
-export LEKIWI_URDF="$HOME/lekiwi01.urdf"
-export LEKIWI_CARTO_LUA="lekiwi01_cartographer.lua"
+export LEKIWI_URDF="$HOME/lekiwi.urdf"
+export LEKIWI_CARTO_LUA="lekiwi_cartographer.lua"
 
 export ROS_DOMAIN_ID=42
 

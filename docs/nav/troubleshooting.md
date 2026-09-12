@@ -361,3 +361,15 @@ IMU 미탑재 기체는 `lekiwi_cartographer.lua` 에서 `tracking_frame = "base
 | 정지 중 파티클 미표시 | 4장 |
 | 텔레오퍼레이션 무반응 | 4장 |
 | `Waiting for map....` | 4장 |
+
+## CRLF 줄바꿈이 섞인 프로파일
+
+| | |
+|---|---|
+| **문제상황** | `check_config` 가 `[실패] 라이다 /dev/ttyUSB0` 을 내는데, 정작 `/scan` 은 정상(6 Hz)으로 나온다. `ls /dev/ttyUSB0` 도 멀쩡히 있다. |
+| **원인** | `lekiwi_profile.sh` 가 CRLF 였다. `source` 하면 값 끝에 `\r` 이 붙어 `LEKIWI_LIDAR_PORT='/dev/ttyUSB0\r'` 가 되고, 이는 존재하지 않는 경로다. 런치는 자체 파서가 `.strip()` 을 해서 멀쩡했고, 셸을 거치는 쪽만 깨져 증상이 모순돼 보였다. |
+| **해결방법** | `sed -i 's/\r$//' ~/lekiwi_profile.sh`. 저장소에는 `nav/.gitattributes` 로 `eol=lf` 를 못 박고, `deploy_lekiwi.py` 가 전송 직전에 CRLF 를 LF 로 바꾸며 경고하도록 했다. |
+| **확인** | `bash -lc 'source ~/lekiwi_profile.sh && python3 -c "import os;print(repr(os.environ[\'LEKIWI_LIDAR_PORT\']))"'` |
+
+증상과 원인이 다른 층에 있는 전형적인 예다. 값을 눈으로 비교하면 똑같아 보이므로
+반드시 `repr()` 로 찍어볼 것.

@@ -179,7 +179,7 @@ def main():
             print("\n  설정값과 %+.2f도 차이. 아래 세 곳을 모두 %+.2f 로 고칠 것:" % (d, best))
             print("    ~/lekiwi_profile.sh            LEKIWI_LIDAR_YAW")
             print("    ~/launch/lekiwi_sensors.launch.py   DEFAULTS[\"lidar_yaw\"]")
-            print("    ~/lekiwi06.urdf                base_link_to_lidar_link 의 rpy (라디안 %.6f)"
+            print("    ~/lekiwi.urdf                base_link_to_lidar_link 의 rpy (라디안 %.6f)"
                   % math.radians(best))
     except KeyboardInterrupt:
         print("\n중단됨")
