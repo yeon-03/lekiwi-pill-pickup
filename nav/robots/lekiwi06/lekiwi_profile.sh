@@ -38,8 +38,8 @@ export LEKIWI_WHEEL_BLIND="179.5:38.5,61.0:35.5,-59.3:34.0"
 # --- 장치 -----------------------------------------------------------------
 export LEKIWI_LIDAR_PORT="/dev/ttyUSB0"
 export LEKIWI_SERVO_PORT="/dev/ttyACM0"
-export LEKIWI_URDF="$HOME/${LEKIWI_NAME}.urdf"
-export LEKIWI_CARTO_LUA="${LEKIWI_NAME}_cartographer.lua"
+export LEKIWI_URDF="$HOME/lekiwi.urdf"
+export LEKIWI_CARTO_LUA="lekiwi_cartographer.lua"
 
 # --- ROS ------------------------------------------------------------------
 export ROS_DOMAIN_ID=42

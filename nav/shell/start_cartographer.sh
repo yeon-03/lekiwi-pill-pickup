@@ -12,7 +12,7 @@ pkill -f "cartographer_occupancy_grid_node" 2>/dev/null && sleep 1
 echo "cartographer_node 시작..."
 setsid nohup ros2 run cartographer_ros cartographer_node \
     -configuration_directory "$HOME" \
-    -configuration_basename lekiwi06_cartographer.lua \
+    -configuration_basename lekiwi_cartographer.lua \
     --ros-args -p use_sim_time:=false \
     > "$HOME/cartographer.log" 2>&1 < /dev/null &
 sleep 2
