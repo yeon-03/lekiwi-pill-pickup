@@ -20,6 +20,7 @@
   .targets button.active { opacity: 1; border-color: #fff; }
   #target-red { background: #e74c3c; color: #fff; }
   #target-green { background: #2ecc71; color: #000; }
+  #target-blue { background: #3498db; color: #fff; }
   #target-none { background: #34495e; color: #fff; }
   #status { margin-top: 16px; font-family: monospace; white-space: pre-wrap; background: #222; padding: 10px; border-radius: 4px; }
 </style>
@@ -42,7 +43,8 @@
     <span>타겟 색:</span>
     <button id="target-red">🔴 빨강만</button>
     <button id="target-green">🟢 초록만</button>
-    <button id="target-none">둘 다</button>
+    <button id="target-blue">🔵 파랑만</button>
+    <button id="target-none">전체</button>
   </div>
   <pre id="status">연결 중...</pre>
 
@@ -58,12 +60,13 @@
   document.getElementById("estop").onclick = () => post("/estop");
   document.getElementById("target-red").onclick = () => post("/target/red_pill_bottle");
   document.getElementById("target-green").onclick = () => post("/target/green_pill_bottle");
+  document.getElementById("target-blue").onclick = () => post("/target/blue_pill_bottle");
   document.getElementById("target-none").onclick = () => post("/target/none");
 
   function updateTargetButtons(targetClass) {
-    const map = { red_pill_bottle: "target-red", green_pill_bottle: "target-green" };
+    const map = { red_pill_bottle: "target-red", green_pill_bottle: "target-green", blue_pill_bottle: "target-blue" };
     const activeId = map[targetClass] || "target-none";
-    for (const id of ["target-red", "target-green", "target-none"]) {
+    for (const id of ["target-red", "target-green", "target-blue", "target-none"]) {
       document.getElementById(id).classList.toggle("active", id === activeId);
     }
   }
