@@ -37,6 +37,9 @@ export LEKIWI_WHEEL_BLIND="179.5:38.5,61.0:35.5,-59.3:34.0"
 
 # --- 장치 -----------------------------------------------------------------
 export LEKIWI_LIDAR_PORT="/dev/ttyUSB0"
+
+# 라이다 반사 강도 필터. 방 한가운데 생기던 가짜 벽을 없애려고 25 로 뒀다.
+export LEKIWI_MIN_INTENSITY="25"
 export LEKIWI_SERVO_PORT="/dev/ttyACM0"
 export LEKIWI_URDF="$HOME/lekiwi.urdf"
 export LEKIWI_CARTO_LUA="lekiwi_cartographer.lua"

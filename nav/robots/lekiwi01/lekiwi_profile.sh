@@ -33,6 +33,10 @@ export LEKIWI_WHEEL_BLIND="-59.5:41.0,-179.8:36.5,60.0:36.0"
 
 # --- 장치 -----------------------------------------------------------------
 export LEKIWI_LIDAR_PORT="/dev/ttyUSB0"
+
+# 라이다 반사 강도 필터 (0 = 끔). 2026-09-12 실측: 25 에서 유효 빔 10.8% --
+# 1 m 너머 반사가 전부 버려져 지도가 깨졌다. 0 에서 약 60% 로 회복.
+export LEKIWI_MIN_INTENSITY="0"
 export LEKIWI_SERVO_PORT="/dev/ttyACM0"
 export LEKIWI_URDF="$HOME/lekiwi.urdf"
 export LEKIWI_CARTO_LUA="lekiwi_cartographer.lua"
