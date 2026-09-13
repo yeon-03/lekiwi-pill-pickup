@@ -29,6 +29,7 @@ SHARED = [
     "mission/keep_particles.py", "mission/find_pose.py", "mission/align_helper.py",
     "mission/send_goal.py", "mission/abo_nav_bridge.py", "mission/run_abo.sh",
     "mission/waypoints.yaml",
+    "mission/color_intent.py",
     # 시험 / 진단
     "tools/check_config.py", "tools/odom_test.py", "tools/lidar_test.py",
     "tools/deadbeam.py", "tools/procchk.py", "tools/tf_chain.py",
@@ -36,7 +37,7 @@ SHARED = [
     # 셸 (런치로 대체됐지만 텔레옵 등 일부는 여전히 필요)
     "shell/run_base.sh", "shell/run_imu.sh", "shell/run_lidar.sh",
     "shell/run_lidar_front60.sh", "shell/run_rsp.sh", "shell/run_teleop.sh",
-    "shell/run_amcl.sh", "shell/run_nav2.sh",
+    "shell/run_amcl.sh", "shell/run_nav2.sh", "shell/pick_trigger.sh",
     "shell/start_all.sh", "shell/stop_all.sh", "shell/start_nav.sh",
     "shell/stop_nav2.sh", "shell/start_cartographer.sh", "shell/stop_cartographer.sh",
     # 설정 / 설치

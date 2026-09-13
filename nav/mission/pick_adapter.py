@@ -19,10 +19,15 @@ ROS 를 전혀 모른다(requirements.txt 에 rclpy 가 없다). 그래서 ROS �
 올라가면 카메라가 없어 실행되지 않는다.
 
 목적지 이름 -> 색상
-  자율주행은 웨이포인트 이름("center")을 보내고 집기는 색상("green")을
-  받는다. 그 대응은 현장 배치에 따라 달라지므로 --map 으로 준다.
+  자율주행은 기본적으로 웨이포인트 이름("center")만 보내고, 그러면 집기는
+  --map 으로 미리 정해둔 고정 색상을 쓴다(현장에 색상별로 다른 자리를 뒀을 때):
 
     python3 pick_adapter.py --map center=green,left=red,right=blue
+
+  하지만 사용자가 발화로 그때그때 색을 고르는 경우(한 자리에 여러 색이 같이
+  있음, abo_nav_bridge.py 의 "fetch center color:red" 형식)에는 요청 자체에
+  "이름:색상"으로 색이 실려 온다 -- 그 경우 --map 보다 우선한다. 요청에 색이
+  없으면(콜론 없음) 예전처럼 --map 을 그대로 쓴다.
 
 결과 판정
   pick_cycle.py 는 시작하자마자 결과 파일을 지우고, 끝나면 다시 쓴다.
@@ -86,22 +91,32 @@ class PickAdapter(Node):
             self.done_q.put((False, f"어댑터 오류: {e}"))
 
     def _on_request(self, msg):
-        target = (msg.data or "").strip()
+        raw = (msg.data or "").strip()
+        # "center:red" 형식이면 발화로 고른 색이 실려온 것 -- --map 보다 우선.
+        # 콜론이 없으면 partition 의 세 번째 값이 빈 문자열이라 기존처럼 --map 을 쓴다.
+        target, _, explicit_color = raw.partition(":")
+        target = target.strip()
+        explicit_color = explicit_color.strip().lower()
+
         if self.busy:
             # 이미 집는 중인데 또 왔다. 무시한다 -- 두 번 실행하면 팔이 엉킨다.
-            self.get_logger().warn(f"집는 중이라 '{target}' 요청 무시")
+            self.get_logger().warn(f"집는 중이라 '{raw}' 요청 무시")
             return
 
-        color = self.mapping.get(target)
+        color = explicit_color or self.mapping.get(target)
         if color is None:
             self.get_logger().error(
                 f"목적지 '{target}' 에 대응하는 색상이 없다. --map 확인. "
                 f"현재: {self.mapping}")
             self.done_q.put((False, f"'{target}' 매핑 없음"))
             return
+        if color not in ("red", "green", "blue"):
+            self.get_logger().error(f"알 수 없는 색상 '{color}' (요청: {raw!r})")
+            self.done_q.put((False, f"알 수 없는 색상 '{color}'"))
+            return
 
         self.busy = True
-        self.get_logger().info(f"집기 시작: {target} -> --color {color}")
+        self.get_logger().info(f"집기 시작: {raw} -> --color {color}")
         threading.Thread(target=self.run_pick, args=(color,), daemon=True).start()
 
     # --- 집기 실행 (별도 스레드) --------------------------------------------

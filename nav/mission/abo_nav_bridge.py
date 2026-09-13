@@ -15,6 +15,13 @@ abo 쪽은 문자열 토픽 하나만 알면 된다. 좌표도 Nav2 액션도 �
           "fetch center"         -> 왕복 미션: 이동 -> pick -> **출발 자리로** 복귀
           "fetch center to home" -> 복귀 지점을 웨이포인트로 지정
           "fetch center to start"-> 명시적으로 출발 자리 (기본값)
+          "fetch center color:red" -> 약통 색상을 함께 실어 보낸다(선택, 순서 무관 —
+                                     "to"/"color:" 토큰을 먼저 걷어내고 남는 게 목적지
+                                     이름). A-Bo_project의 dialogue_node가 LLM
+                                     tool-calling으로 색상을 판단해 SSH로 이 명령을
+                                     보낸다(도메인 77 -> 42 경계를 SSH로 넘는다 — 두
+                                     로봇은 ROS_DOMAIN_ID가 달라 ROS2 토픽을 직접
+                                     공유하지 못한다).
 
   출력  /abo/status    std_msgs/String   사람이 읽는 한 줄
         /abo/state     std_msgs/String   기계가 읽는 값:
@@ -22,7 +29,9 @@ abo 쪽은 문자열 토픽 하나만 알면 된다. 좌표도 Nav2 액션도 �
                                          done|failed|rejected|canceled
 
   pick 인계 (담당자가 다른 사람이라 여기서는 신호만 주고받는다)
-        /abo/pick_request  std_msgs/String  ->  목적지 이름. 도착 직후 발행
+        /abo/pick_request  std_msgs/String  ->  "목적지" 또는 색상이 있으면
+                                                "목적지:색상"(예: "center:red").
+                                                도착 직후 발행
         /abo/pick_done     std_msgs/Bool    <-  true 성공 / false 실패
                                                 이걸 받아야 복귀를 시작한다
 
@@ -31,6 +40,8 @@ abo 쪽은 문자열 토픽 하나만 알면 된다. 좌표도 Nav2 액션도 �
 import math, os, sys, time, threading, subprocess, shlex
 import yaml
 import rclpy
+
+from color_intent import COLORS, extract_color_token  # 같은 디렉터리에 배포됨
 from rclpy.node import Node
 from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
@@ -141,10 +152,14 @@ class AboNav(Node):
             # 사람이 로봇을 놓는 자리는 매번 조금씩 다른데, home(0,0) 으로
             # 돌아가면 그 차이만큼 어긋난 곳에 선다(실측 9.2 cm).
             ret = "start"
+            rest, color = extract_color_token(rest)
+            if color and color not in COLORS:
+                return self.say(f"'{color}' 색은 지원하지 않아요. 지원 색상: "
+                                + ", ".join(COLORS), "rejected")
             if len(rest) >= 3 and rest[-2].lower() in ("to", "->", "로"):
                 ret = rest[-1]; rest = rest[:-2]
             name = " ".join(rest).strip()
-            return self.start_mission(name, ret)
+            return self.start_mission(name, ret, color)
 
         tok = raw.split()
         if tok and tok[0].lower() == "goto":
@@ -248,7 +263,7 @@ class AboNav(Node):
             self.get_logger().warn(f"재정합 실패({e}). 건너뛰고 진행한다.")
 
     # ---------- 왕복 미션 ----------
-    def start_mission(self, name, return_to):
+    def start_mission(self, name, return_to, color=None):
         self._load()
         pt = self.wp.get(name) or self.wp.get(name.lower())
         if pt is None:
@@ -275,7 +290,7 @@ class AboNav(Node):
             rt_label = return_to
 
         self.mission = {"target": name, "return_to": rt_label,
-                        "return_pt": rt_pt, "phase": "going"}
+                        "return_pt": rt_pt, "phase": "going", "color": color}
         self.say(f"{name} 에 가서 물건을 가져올게요.", "moving")
         self.go(pt["x"], pt["y"], math.radians(pt.get("yaw", 0.0)), name)
 
@@ -287,7 +302,9 @@ class AboNav(Node):
             self.mission = None
             self.set_bus(True)
             return self.say("팔 제어를 시작하지 못했어요.", "failed")
-        self.pub_pick.publish(String(data=self.mission["target"]))
+        color = self.mission.get("color")
+        payload = f'{self.mission["target"]}:{color}' if color else self.mission["target"]
+        self.pub_pick.publish(String(data=payload))
         self.pick_deadline = time.time() + self.pick_timeout
         self.say("도착했어요. 물건을 집는 중이에요.", "picking")
 
