@@ -96,9 +96,10 @@ class PickPlaceHeadlessWorker:
 
     def go_home(self) -> None:
         """[다시 시도]와 달리, 지금 자세를 그대로 인정하는 게 아니라 연결을 유지한 채
-        실제로 세션 시작 시점의 자세로 천천히 되돌린다 (RollOutPlayer 재사용). 도착 후
-        일시정지 상태로 pick 을 다시 준비한다 — 수동으로 팔을 이리저리 만져본 뒤
-        "일단 처음 자세로" 되돌리고 싶을 때 쓴다."""
+        실제로 저장된 기준 자세로 천천히 되돌린다 (RollOutPlayer 재사용). "home"(단정한
+        시작 자세)이 저장돼 있으면 그걸, 없으면 "pre_pick"을 목표로 삼는다(둘 다 없으면
+        현재 자세를 그대로 유지). 도착 후 일시정지 상태로 pick 을 다시 준비한다 —
+        수동으로 팔을 이리저리 만져본 뒤 "일단 처음 자세로" 되돌리고 싶을 때 쓴다."""
         self.home_event.set()
 
     def restart(self) -> None:
@@ -293,7 +294,7 @@ class PickPlaceHeadlessWorker:
 
                 self._recover_lost_servo(arm, allow_motion, loop_start)
 
-                if self.cfg.check.enabled and arm.grasp_enabled and arm.state == "GRASPED":
+                if self.cfg.check.enabled and arm.grasp_enabled and arm.state == "GRASPED" and allow_motion:
                     if checker.state == "IDLE":
                         checker.start(loop_start)
                     checker.update(frames_bgr, dets_by_view, loop_start)
@@ -378,6 +379,11 @@ class PickPlaceHeadlessWorker:
         [정지]의 롤아웃과 [처음 자세로] 버튼이 공유하는 로직."""
         rollout = RollOutPlayer(current, home, self._rollout_time_s)
         while not rollout.done:
+            if self.abort_event.is_set():
+                # 비상정지는 롤아웃이 끝날 때까지(최대 rollout_time_s 초) 기다리면 안 된다 —
+                # 2026-09-13 리뷰에서 지적: _shutdown() 의 정상 종료 롤아웃은 stop_event 가
+                # 이미 set 된 채로 진행되므로 여기서는 abort_event 만 확인해야 한다.
+                return
             now = time.perf_counter()
             pose = rollout.update(now)
             self.robot.send_action({**pose, **STOP})
@@ -397,7 +403,8 @@ class PickPlaceHeadlessWorker:
         except Exception:
             logging.exception("정지 시퀀스 중 오류")
         finally:
-            try:
-                self.robot.disconnect()
-            except Exception:
-                logging.exception("연결 해제 실패")
+            if self.robot.is_connected:
+                try:
+                    self.robot.disconnect()
+                except Exception:
+                    logging.exception("연결 해제 실패")
