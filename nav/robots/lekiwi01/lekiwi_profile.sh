@@ -42,4 +42,6 @@ export LEKIWI_URDF="$HOME/lekiwi.urdf"
 export LEKIWI_CARTO_LUA="lekiwi_cartographer.lua"
 
 export ROS_DOMAIN_ID=42
+# 에이보/노트북이 다른 네트워크일 때 고정 피어 (IP 를 안 적었으면 아무것도 안 바뀐다)
+[ -f "$HOME/ros_peers.sh" ] && source "$HOME/ros_peers.sh"
 
