@@ -11,3 +11,12 @@
 왕복 미션 — 은 [`nav/`](nav/README.md) 에 있다. 집기와는 ROS2 토픽 두 개로만
 붙는다: 도착하면 `/abo/pick_request` 를 발행하고, `/abo/pick_done` 을 받아야
 복귀를 시작한다.
+
+## 외부 저장소에서 가져온 코드
+
+색상 지정 픽업에 쓰는 다른 저장소 코드를 한곳에 모았다.
+
+- [`yolo_and_pick/`](yolo_and_pick/README.md) — `roboseasy/lekiwi` 의 YOLO 검출 + 집기 CLI
+  (`feature/target-color-pickup`, 커밋 `f69c4da`). `--target_color`/`--result_file` 옵션 추가본.
+- [`abo/`](abo/README.md) — `roboseasy-members/A-Bo_project` 의 발화 → `pick_<color>` 연동 파일 사본
+  (PR #30, 커밋 `4bb2b84`).
