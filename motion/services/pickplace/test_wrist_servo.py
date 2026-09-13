@@ -10,6 +10,8 @@
    박스 소실을 근접으로 보고 READY 로 넘어가야 한다.
 """
 
+import pytest
+
 from services.pickplace.wrist_servo import GraspArgs, WristServo
 from services.pickplace.yolo_detect import Detection
 
@@ -93,3 +95,60 @@ def test_y_anchor_bottom_targets_box_bottom_edge_not_center():
 
 def test_y_anchor_bottom_accepted_by_validate():
     GraspArgs(y_anchor="bottom").validate()
+
+
+def _pose_servo(**kw) -> WristServo:
+    cfg = GraspArgs(approach_mode="pose", retry_depth_step=0.02, retry_depth_max=0.06, **kw)
+    start = {
+        "arm_shoulder_pan.pos": 5.0,
+        "arm_shoulder_lift.pos": 60.0,
+        "arm_elbow_flex.pos": -55.0,
+        "arm_wrist_flex.pos": 47.0,
+        "arm_gripper.pos": 100.0,
+    }
+    grasp = {
+        "arm_shoulder_pan.pos": -5.0,
+        "arm_shoulder_lift.pos": 160.0,
+        "arm_elbow_flex.pos": -95.0,
+        "arm_wrist_flex.pos": 27.0,
+        "arm_gripper.pos": 100.0,
+    }
+    return WristServo(cfg, start, grasp)
+
+
+def test_retry_depth_steps_only_height_joints():
+    """재시도는 높이 관절만 조금 더 내리고 pan 은 그대로 둔다 (옆으로 밀리지 않게)."""
+    servo = _pose_servo()
+    servo.progress = 1.0
+    before = servo._compose()
+    servo.resume()
+    after = servo._compose()
+
+    assert after["arm_shoulder_pan.pos"] == before["arm_shoulder_pan.pos"]
+    assert after["arm_wrist_flex.pos"] == before["arm_wrist_flex.pos"]
+    assert after["arm_shoulder_lift.pos"] - before["arm_shoulder_lift.pos"] == pytest.approx(100.0 * 0.02)
+    assert after["arm_elbow_flex.pos"] - before["arm_elbow_flex.pos"] == pytest.approx(-40.0 * 0.02)
+
+
+def test_retry_depth_is_capped():
+    servo = _pose_servo()
+    for _ in range(10):
+        servo.resume()
+    assert servo.retry_depth == pytest.approx(0.06)
+
+
+def test_retry_moves_deeper_before_allowing_ready_again():
+    """크기가 이미 목표에 도달한 상태에서 재시도해도, 더 내린 자세에 도착하기 전에는 READY 가 되지 않는다."""
+    servo = _pose_servo()
+    shape = (480, 640, 3)
+    big = Detection(name="pill", conf=0.9, xyxy=(310, 100, 590, 400), cls=0)  # 폭 280 >= 목표
+    servo.update([big], shape, dt=1 / 30, now=0.0, allow_motion=True)
+    lift_before = servo.current["arm_shoulder_lift.pos"]
+    servo.state = "READY"
+    servo.resume()
+
+    servo.update([big], shape, dt=1 / 30, now=0.1, allow_motion=True)
+    assert servo.state != "READY"
+    for i in range(2, 30):
+        servo.update([big], shape, dt=1 / 30, now=i * 0.1, allow_motion=True)
+    assert servo.current["arm_shoulder_lift.pos"] == pytest.approx(lift_before + 2.0, abs=0.5)

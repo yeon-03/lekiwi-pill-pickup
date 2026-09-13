@@ -40,6 +40,9 @@ class GraspCheckArgs:
     front_band_scale: float = 1.0
     # 띠 안 보라색 픽셀 비율이 이 값 이상이면 그쪽에 그리퍼가 있다고 본다
     min_purple_ratio: float = 0.15
+    # front 뷰만 따로 쓸 문턱. None 이면 min_purple_ratio 를 쓴다.
+    # front 는 0.15 로는 덜 쥔 상태도 OK 로 봤다 — 0.23 은 넘어야 제대로 쥔 것 (2026-09-13 실측)
+    front_min_purple_ratio: float | None = None
     # 뷰별로 좌/우 둘 다 있어야 OK. false 면 한쪽만 있어도 OK (큐브가 한쪽 손가락을 가릴 때)
     require_both_sides: bool = True
 
@@ -63,6 +66,10 @@ class GraspCheckArgs:
             raise PickPlaceError(f"error: check.front_band_scale 은 0 보다 커야 합니다 (받은 값: {self.front_band_scale})")
         if not 0.0 < self.min_purple_ratio <= 1.0:
             raise PickPlaceError(f"error: check.min_purple_ratio 는 0~1 사이여야 합니다 (받은 값: {self.min_purple_ratio})")
+        if self.front_min_purple_ratio is not None and not 0.0 < self.front_min_purple_ratio <= 1.0:
+            raise PickPlaceError(
+                f"error: check.front_min_purple_ratio 는 0~1 사이여야 합니다 (받은 값: {self.front_min_purple_ratio})"
+            )
         if self.confirm_frames < 1 or self.timeout_s <= 0:
             raise PickPlaceError("error: check.confirm_frames 는 1 이상, timeout_s 는 0 보다 커야 합니다")
 
@@ -71,6 +78,12 @@ class GraspCheckArgs:
         if view == self.front_view:
             return max(1, int(round(self.band_px * self.front_band_scale)))
         return self.band_px
+
+    def min_ratio_for(self, view: str | None) -> float:
+        """뷰별 보라색 비율 문턱 — front 는 front_min_purple_ratio(있으면), 그 외는 min_purple_ratio."""
+        if view == self.front_view and self.front_min_purple_ratio is not None:
+            return self.front_min_purple_ratio
+        return self.min_purple_ratio
 
 
 def purple_mask(frame_bgr: np.ndarray, cfg: GraspCheckArgs) -> np.ndarray:
@@ -175,7 +188,8 @@ class GraspChecker:
         res.left_strip, res.right_strip = edge_strips(det.xyxy, frame_bgr.shape, self.cfg, band_px=band)
         res.left_ratio = strip_ratio(mask, res.left_strip)
         res.right_ratio = strip_ratio(mask, res.right_strip)
-        lo, ro = res.left_ratio >= self.cfg.min_purple_ratio, res.right_ratio >= self.cfg.min_purple_ratio
+        thr = self.cfg.min_ratio_for(view)
+        lo, ro = res.left_ratio >= thr, res.right_ratio >= thr
         res.ok = (lo and ro) if self.cfg.require_both_sides else (lo or ro)
         return res
 
@@ -221,7 +235,7 @@ def draw_grasp_check(frame_bgr: np.ndarray, checker: GraspChecker, view: str) ->
     if r is None or r.box is None:
         return frame_bgr
     canvas = frame_bgr
-    thr = checker.cfg.min_purple_ratio
+    thr = checker.cfg.min_ratio_for(view)
     for strip, ratio in ((r.left_strip, r.left_ratio), (r.right_strip, r.right_ratio)):
         if strip is None:
             continue
