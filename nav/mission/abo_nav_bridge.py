@@ -45,6 +45,7 @@ from rclpy.node import Node
 from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
+from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 from std_msgs.msg import String, Bool
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from nav2_msgs.action import NavigateToPose
@@ -105,8 +106,14 @@ class AboNav(Node):
         # 쓰는 곳은 목표 yaw 기본값 정도라 그 비용(측정 ~40% CPU)이 아깝다.
         # /amcl_pose 는 AMCL 이 갱신할 때만 나오므로 훨씬 싸다.
         self._pose = None
+        # AMCL 은 /amcl_pose 를 TRANSIENT_LOCAL(마지막 값 보관)로 낸다. 구독도 맞춰야 이 노드가
+        # **늦게 떠도** 마지막 위치를 받는다. VOLATILE 이면 런치에서 52초에 정합한 위치를 58초에
+        # 뜬 브리지가 못 받아, 로봇이 가만히 있는 한 "지금 위치를 몰라서"로 첫 명령을 거절한다
+        # (2026-09-13 lekiwi01 실기기에서 발견).
+        amcl_qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                              reliability=ReliabilityPolicy.RELIABLE)
         self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose",
-                                 self._on_amcl, 10)
+                                 self._on_amcl, amcl_qos)
         self.gh = None
         # 미션(왕복) 상태. None 이면 단발 이동.
         self.mission = None          # {"target","return_to","phase"}
@@ -485,7 +492,10 @@ def main():
     wp = a.waypoints if os.path.exists(a.waypoints) else os.path.expanduser("~/waypoints.yaml")
 
     rclpy.init()
-    n = AboNav(wp, pick_timeout=a.pick_timeout, host_cmd=a.host_cmd or None)
+    # ros2 launch 는 빈 값("host_cmd:=")을 받지 않는다 -- 호스트를 안 띄우려면 none/off/false.
+    host = (a.host_cmd or "").strip()
+    n = AboNav(wp, pick_timeout=a.pick_timeout,
+               host_cmd=None if host.lower() in ("", "none", "off", "false") else host)
     n.reloc_map = a.map or None
     # ZMQ 호스트를 기다리는 동안(set_bus 응답 등) ROS 콜백이 멈추면 안 되므로
     # 멀티스레드 실행기를 쓴다. SingleThreadedExecutor 는 콜백을 하나씩만

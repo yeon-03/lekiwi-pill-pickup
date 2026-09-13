@@ -42,9 +42,10 @@ def generate_launch_description():
         # 집기 단계에 브리지가 서보 버스를 넘겨받은 뒤 띄우는 ZMQ 호스트.
         # 예전엔 이 인자가 없어서 host_start() 가 아무것도 안 띄우고 성공으로
         # 넘어갔다 -- 누가 호스트를 계속 켜 두면 주행 중 버스를 뺏겼고(Nav2 사망),
-        # 아무도 안 켜면 집기가 붙을 곳이 없었다. '' 이면 외부에서 관리한다.
+        # 아무도 안 켜면 집기가 붙을 곳이 없었다. none 이면 띄우지 않는다(외부에서 관리 / 이동만 시험).
+        # (ros2 launch 는 빈 값 "host_cmd:=" 를 받지 않는다)
         DeclareLaunchArgument("host_cmd", default_value=f"bash {HOME}/start_pick_host.sh",
-                              description="집기용 ZMQ 호스트 실행 명령. '' 이면 띄우지 않음"),
+                              description="집기용 ZMQ 호스트 실행 명령. none 이면 띄우지 않음"),
     ]
 
     sensors = IncludeLaunchDescription(
