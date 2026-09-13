@@ -96,6 +96,25 @@ python3 nav/mission/pick_adapter.py \
 집기 의존성(numpy/opencv/scipy/lerobot)이 있는 파이썬은 대개 다른
 환경이므로, 다르면 반드시 지정해야 합니다.
 
+`--pick-script` 로 집기 스크립트를 고릅니다 (`--repo` 기준 경로, 인자·결과
+파일 규약은 둘이 같다).
+
+| 스크립트 | 내용 |
+|---|---|
+| `scripts/pick_cycle.py` (기본) | motion 로직을 직접 조립 |
+| `scripts/pick_worker_cycle.py` | 웹 시연 UI 의 제어 루프(`PickPlaceHeadlessWorker`)를 수정 없이 한 번 돌림. 색은 YOLO 클래스 이름에 색 단어가 있으면 그 클래스로, 없으면 HSV 로 거른다 |
+
+```bash
+python3 nav/mission/pick_adapter.py --repo ~/lekiwi-pill-pickup \
+    --pick-script scripts/pick_worker_cycle.py \
+    --python ~/miniconda3/envs/lerobot/bin/python \
+    --model ~/YOLO/outputs/runs/green_pill/weights/best.pt \
+    --poses-dir ~/.PhysicalLabs/pickplace/lekiwi01/poses
+```
+
+웹 시연 UI(`motion/webui`)와 이 어댑터를 **동시에 쓰지 마세요** — 로봇
+호스트는 클라이언트를 하나만 받습니다.
+
 제한시간은 로봇 쪽(`--pick-timeout`, 기본 180초)보다 짧게 두어야 합니다.
 그래야 로봇이 먼저 포기하지 않고 어댑터가 실패 이유를 보고합니다.
 
@@ -108,8 +127,10 @@ python3 nav/mission/pick_adapter.py \
 python3 nav/tools/test_pick_adapter.py
 ```
 
-로봇이 켜져 있어도 안전합니다 — 로봇(도메인 42)과 겹치지 않는 전용 도메인
-77 에서 돕니다. 여기까지 통과하면 ROS2 설치와 어댑터는 정상이고, 남은 것은
+로봇이 켜져 있어도 안전합니다 — 로봇(42)·에이보(77)와 겹치지 않는 전용 도메인
+91 에서, 이 컴퓨터 안에서만(`ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`) 돕니다.
+`pick_worker_cycle.py` 자체는 `python -m pytest scripts/test_pick_worker_cycle.py`
+로 가짜 로봇에서 시험합니다. 여기까지 통과하면 ROS2 설치와 어댑터는 정상이고, 남은 것은
 두 가지뿐입니다.
 
 1. 노트북과 로봇이 서로 토픽을 보는가 — 양쪽 `ROS_DOMAIN_ID=42` 로 맞추고

@@ -67,6 +67,21 @@ def _port_open(port, host="127.0.0.1", timeout=0.5):
         return False
 
 
+def fetch_conflict(mission, name, color):
+    """진행 중인 미션이 있을 때 새 fetch 명령을 어떻게 볼지. None | "duplicate" | "busy".
+
+    중계(에이보 -> 노트북 -> 로봇)는 같은 명령을 짧은 간격으로 두 번 넘길 수 있다
+    (2026-09-13 음성 시험에서 0.1초 차이로 두 번 수신). 그대로 받으면 이미 가고 있는
+    미션을 처음부터 다시 시작해 복귀 지점(출발 자리)이 이동 중 위치로 바뀐다.
+    같은 목적지·색이면 무시하고, 다른 명령은 지금 미션이 끝나거나 멈출 때까지 거절한다.
+    """
+    if not mission:
+        return None
+    if mission.get("target") == name and mission.get("color") == color:
+        return "duplicate"
+    return "busy"
+
+
 class AboNav(Node):
     def __init__(self, wp_path, pick_timeout=180.0, host_cmd=None):
         super().__init__("abo_nav_bridge")
@@ -171,6 +186,13 @@ class AboNav(Node):
             if len(rest) >= 3 and rest[-2].lower() in ("to", "->", "로"):
                 ret = rest[-1]; rest = rest[:-2]
             name = " ".join(rest).strip()
+            conflict = fetch_conflict(self.mission, name, color)
+            if conflict == "duplicate":
+                self.get_logger().info(f"진행 중인 미션과 같은 명령이 또 왔다 -- 무시: {raw!r}")
+                return
+            if conflict == "busy":
+                return self.say("지금 다른 심부름 중이에요. 끝나거나 멈춘 뒤에 다시 말씀해 주세요.",
+                                "rejected")
             return self.start_mission(name, ret, color)
 
         tok = raw.split()
@@ -388,6 +410,7 @@ class AboNav(Node):
 
     def go(self, x, y, yaw, label):
         if not self.cli.wait_for_server(timeout_sec=5.0):
+            self.mission = None   # 남겨두면 다음 fetch 가 "다른 심부름 중"으로 막힌다
             return self.say("자율주행이 준비되지 않았어요. Nav2 를 확인해 주세요.", "failed")
         if yaw is None:
             p = self.pose_now()
@@ -408,6 +431,7 @@ class AboNav(Node):
         gh = fut.result()
         if not gh.accepted:
             self.gh = None
+            self.mission = None   # 남겨두면 다음 fetch 가 "다른 심부름 중"으로 막힌다
             return self.say("거기까지 가는 길을 찾지 못했어요.", "rejected")
         self.gh = gh
         gh.get_result_async().add_done_callback(self.on_result)

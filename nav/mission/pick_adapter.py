@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """자율주행(로봇)과 집기(노트북)를 잇는 어댑터.
 
-  /abo/pick_request (String)  받음  ->  pick_cycle.py 실행
+  /abo/pick_request (String)  받음  ->  집기 스크립트 실행 (--pick-script)
   /abo/pick_done    (Bool)    보냄  <-  결과 JSON 판정
 
   ** 이 노드는 노트북에서 돈다. 로봇(Pi)이 아니다. **
@@ -29,8 +29,15 @@ ROS 를 전혀 모른다(requirements.txt 에 rclpy 가 없다). 그래서 ROS �
   "이름:색상"으로 색이 실려 온다 -- 그 경우 --map 보다 우선한다. 요청에 색이
   없으면(콜론 없음) 예전처럼 --map 을 그대로 쓴다.
 
+집기 스크립트 (--pick-script, 저장소 기준 경로)
+    scripts/pick_cycle.py         기본값. motion 로직을 직접 조립
+    scripts/pick_worker_cycle.py  motion 의 PickPlaceHeadlessWorker(웹 시연 UI 의
+                                  제어 루프)를 그대로 써서 한 번 집는다
+  둘 다 인자(--color/--result-file/--model/--poses-dir/--remote-ip)와 결과 파일
+  규약이 같아서, 어댑터는 어느 쪽이든 똑같이 부른다.
+
 결과 판정
-  pick_cycle.py 는 시작하자마자 결과 파일을 지우고, 끝나면 다시 쓴다.
+  두 스크립트 모두 시작하자마자 결과 파일을 지우고, 끝나면 다시 쓴다.
   따라서 "파일 없음"은 성공도 실패도 아닌 '끝나기 전에 죽음'이다 -- 셋 다
   복귀는 해야 하므로 pick_done=false 로 보내되, 로그는 구분해서 남긴다.
 """
@@ -55,9 +62,10 @@ RESULT = f"/tmp/lekiwi_result_{SKILL}.json"
 
 
 class PickAdapter(Node):
-    def __init__(self, repo, mapping, timeout, python, extra):
+    def __init__(self, repo, mapping, timeout, python, extra, script="scripts/pick_cycle.py"):
         super().__init__("pick_adapter")
         self.repo = Path(repo).expanduser()
+        self.script = script
         self.mapping = mapping
         self.timeout = timeout
         self.python = python
@@ -73,12 +81,12 @@ class PickAdapter(Node):
         # 스레드에서 돌리고, 결과만 이 타이머가 받아 발행한다.
         self.create_timer(0.5, self.on_tick, callback_group=cbg)
 
-        script = self.repo / "scripts" / "pick_cycle.py"
+        script = self.repo / self.script
         if not script.is_file():
-            self.get_logger().error(f"pick_cycle.py 를 찾지 못했다: {script}")
+            self.get_logger().error(f"집기 스크립트를 찾지 못했다: {script}")
             self.get_logger().error("--repo 로 저장소 경로를 지정할 것.")
         self.get_logger().info(
-            f"준비됨. repo={self.repo}  매핑={self.mapping}  "
+            f"준비됨. repo={self.repo}  스크립트={self.script}  매핑={self.mapping}  "
             f"제한시간={self.timeout:.0f}초  도메인={os.environ.get('ROS_DOMAIN_ID','0')}")
 
     # --- 요청 ---------------------------------------------------------------
@@ -126,7 +134,7 @@ class PickAdapter(Node):
             # 지난 실행 결과가 남아 있으면 이번 것으로 오독된다.
             Path(RESULT).unlink(missing_ok=True)
 
-            cmd = [self.python, "scripts/pick_cycle.py",
+            cmd = [self.python, self.script,
                    "--color", color, "--result-file", RESULT] + self.extra
             self.get_logger().info("실행: " + " ".join(cmd))
             t0 = time.time()
@@ -137,7 +145,7 @@ class PickAdapter(Node):
             if p.returncode != 0:
                 tail = (p.stderr or "").strip().splitlines()[-3:]
                 self.get_logger().error(
-                    f"pick_cycle.py 종료코드 {p.returncode} ({dt:.0f}초)")
+                    f"{self.script} 종료코드 {p.returncode} ({dt:.0f}초)")
                 for line in tail:
                     self.get_logger().error("  " + line)
 
@@ -203,6 +211,9 @@ def main():
         description="자율주행(로봇)과 집기(노트북)를 잇는다. 노트북에서 실행할 것.")
     ap.add_argument("--repo", default="~/lekiwi-pill-pickup",
                     help="집기 저장소 경로 (scripts/pick_cycle.py 가 있는 곳)")
+    ap.add_argument("--pick-script", default="scripts/pick_cycle.py",
+                    help="실행할 집기 스크립트 (--repo 기준). "
+                         "예: scripts/pick_worker_cycle.py")
     ap.add_argument("--map", type=parse_map, default="center=green",
                     help="목적지=색상 대응. 예: center=green,left=red,right=blue")
     ap.add_argument("--timeout", type=float, default=150.0,
@@ -265,7 +276,8 @@ def main():
               "집기가 바로 실패한다 (시험용 가짜 pick_cycle 이면 무시)", file=sys.stderr)
 
     rclpy.init()
-    node = PickAdapter(a.repo, mapping, a.timeout, python, pick_opts + list(a.pick_args))
+    node = PickAdapter(a.repo, mapping, a.timeout, python, pick_opts + list(a.pick_args),
+                       a.pick_script)
     ex = MultiThreadedExecutor(num_threads=2)
     ex.add_node(node)
     try:
@@ -274,7 +286,9 @@ def main():
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        # SIGTERM/SIGINT 로 끝나면 rclpy 가 이미 컨텍스트를 내렸다 -- 두 번 부르면 RCLError.
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":
