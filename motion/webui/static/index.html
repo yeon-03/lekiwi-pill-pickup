@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>LeKiwi Pick&Place</title>
+<style>
+  body { font-family: sans-serif; background: #111; color: #eee; margin: 0; padding: 16px; }
+  .views { display: flex; gap: 12px; flex-wrap: wrap; }
+  .views img { width: 480px; max-width: 100%; border: 2px solid #444; border-radius: 4px; }
+  .controls { margin-top: 16px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  button { font-size: 18px; padding: 10px 18px; border-radius: 6px; border: none; cursor: pointer; }
+  #start { background: #2ecc71; color: #000; }
+  #pause { background: #f1c40f; color: #000; }
+  #stop { background: #7f8c8d; color: #fff; }
+  #estop { background: #e74c3c; color: #fff; font-weight: bold; font-size: 22px; padding: 14px 24px; }
+  #status { margin-top: 16px; font-family: monospace; white-space: pre-wrap; background: #222; padding: 10px; border-radius: 4px; }
+</style>
+</head>
+<body>
+  <h1>LeKiwi Pick&Place</h1>
+  <div class="views">
+    <img src="/stream/front" alt="front">
+    <img src="/stream/wrist" alt="wrist">
+  </div>
+  <div class="controls">
+    <button id="start">▶ 시작</button>
+    <button id="pause">❚❚ 일시정지</button>
+    <button id="stop">■ 정지</button>
+    <button id="estop">⚠ 비상정지</button>
+  </div>
+  <pre id="status">연결 중...</pre>
+
+<script>
+  async function post(path) {
+    await fetch(path, { method: "POST" });
+  }
+  document.getElementById("start").onclick = () => post("/start");
+  document.getElementById("pause").onclick = () => post("/pause");
+  document.getElementById("stop").onclick = () => post("/stop");
+  document.getElementById("estop").onclick = () => post("/estop");
+
+  async function pollStatus() {
+    try {
+      const resp = await fetch("/status");
+      const data = await resp.json();
+      document.getElementById("status").textContent = JSON.stringify(data, null, 2);
+    } catch (e) {
+      document.getElementById("status").textContent = "상태 조회 실패: " + e;
+    }
+  }
+  setInterval(pollStatus, 300);
+  pollStatus();
+</script>
+</body>
+</html>

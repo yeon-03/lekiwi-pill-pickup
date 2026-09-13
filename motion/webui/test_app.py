@@ -26,6 +26,15 @@ class FakeWorker:
         self.aborted = True
 
 
+def test_index_serves_static_page():
+    worker = FakeWorker()
+    client = TestClient(create_app(worker))
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert "LeKiwi Pick&Place" in resp.text
+    assert "/stream/front" in resp.text
+
+
 def test_start_resumes_worker():
     worker = FakeWorker()
     client = TestClient(create_app(worker))
