@@ -63,6 +63,11 @@ def create_app(worker: Any) -> FastAPI:
         worker.restart()
         return {"ok": True}
 
+    @app.post("/home")
+    def home() -> dict[str, bool]:
+        worker.go_home()
+        return {"ok": True}
+
     @app.get("/status")
     def status() -> dict[str, Any]:
         return worker.status.get()

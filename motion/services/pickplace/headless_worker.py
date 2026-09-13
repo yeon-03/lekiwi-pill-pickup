@@ -68,6 +68,7 @@ class PickPlaceHeadlessWorker:
         self.stop_event = threading.Event()
         self.abort_event = threading.Event()
         self.restart_event = threading.Event()
+        self.home_event = threading.Event()
 
         self._thread: threading.Thread | None = None
 
@@ -92,6 +93,13 @@ class PickPlaceHeadlessWorker:
     def request_abort(self) -> None:
         self.abort_event.set()
         self.stop_event.set()
+
+    def go_home(self) -> None:
+        """[다시 시도]와 달리, 지금 자세를 그대로 인정하는 게 아니라 연결을 유지한 채
+        실제로 세션 시작 시점의 자세로 천천히 되돌린다 (RollOutPlayer 재사용). 도착 후
+        일시정지 상태로 pick 을 다시 준비한다 — 수동으로 팔을 이리저리 만져본 뒤
+        "일단 처음 자세로" 되돌리고 싶을 때 쓴다."""
+        self.home_event.set()
 
     def restart(self) -> None:
         """[정지] 처럼 연결을 끊지 않고, 지금 자세를 새 기준으로 잡아 pick 을 처음부터
@@ -224,6 +232,20 @@ class PickPlaceHeadlessWorker:
                     self.status.set({"state": "RESTART_READY", "dry_run": self.cfg.dry_run, "paused": True})
                     continue
 
+                if self.home_event.is_set():
+                    self.home_event.clear()
+                    self.paused_event.set()
+                    current = self._latch_pose(obs)
+                    if not self.cfg.dry_run and current and home:
+                        self.status.set({"state": "GOING_HOME", "dry_run": self.cfg.dry_run, "paused": True})
+                        self._run_rollout(current, home)
+                    ap = Approacher(self.cfg.approach)
+                    arm = ArmSequencer(home, pick_pose, self.cfg.pick, self.cfg.grasp, grasp_pose)
+                    checker = GraspChecker(self.cfg.check)
+                    hold_pose = dict(home)
+                    self.status.set({"state": "HOME_READY", "dry_run": self.cfg.dry_run, "paused": True})
+                    continue
+
                 dets_by_view = self._infer(model, self.cfg.yolo, frames_bgr)
                 if (
                     self.cfg.grasp.enabled
@@ -344,18 +366,23 @@ class PickPlaceHeadlessWorker:
         finally:
             self._shutdown(home, clean_exit)
 
+    def _run_rollout(self, current: dict[str, float], home: dict[str, float]) -> None:
+        """`RollOutPlayer` 로 current → home 을 천천히 보간해서 실제로 보낸다 (블로킹).
+        [정지]의 롤아웃과 [처음 자세로] 버튼이 공유하는 로직."""
+        rollout = RollOutPlayer(current, home, self._rollout_time_s)
+        while not rollout.done:
+            now = time.perf_counter()
+            pose = rollout.update(now)
+            self.robot.send_action({**pose, **STOP})
+            time.sleep(1.0 / max(1, self.cfg.fps))
+
     def _shutdown(self, home: dict[str, float], clean_exit: bool) -> None:
         try:
             if not self.robot.is_connected:
                 return
             if clean_exit and not self.abort_event.is_set() and home:
                 current = self._latch_pose(self.robot.get_observation() or {})
-                rollout = RollOutPlayer(current, home, self._rollout_time_s)
-                while not rollout.done:
-                    now = time.perf_counter()
-                    pose = rollout.update(now)
-                    self.robot.send_action({**pose, **STOP})
-                    time.sleep(1.0 / max(1, self.cfg.fps))
+                self._run_rollout(current, home)
             else:
                 hold = self._latch_pose(self.robot.get_observation() or {})
                 self.robot.send_action({**hold, **STOP})

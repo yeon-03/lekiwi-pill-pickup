@@ -12,6 +12,7 @@
   #start { background: #2ecc71; color: #000; }
   #pause { background: #f1c40f; color: #000; }
   #restart { background: #3498db; color: #fff; }
+  #home { background: #9b59b6; color: #fff; }
   #stop { background: #7f8c8d; color: #fff; }
   #estop { background: #e74c3c; color: #fff; font-weight: bold; font-size: 22px; padding: 14px 24px; }
   #status { margin-top: 16px; font-family: monospace; white-space: pre-wrap; background: #222; padding: 10px; border-radius: 4px; }
@@ -27,6 +28,7 @@
     <button id="start">▶ 시작</button>
     <button id="pause">❚❚ 일시정지</button>
     <button id="restart">🔄 다시 시도</button>
+    <button id="home">🏠 처음 자세로</button>
     <button id="stop">■ 정지 (연결 종료)</button>
     <button id="estop">⚠ 비상정지</button>
   </div>
@@ -39,6 +41,7 @@
   document.getElementById("start").onclick = () => post("/start");
   document.getElementById("pause").onclick = () => post("/pause");
   document.getElementById("restart").onclick = () => post("/restart");
+  document.getElementById("home").onclick = () => post("/home");
   document.getElementById("stop").onclick = () => post("/stop");
   document.getElementById("estop").onclick = () => post("/estop");
 

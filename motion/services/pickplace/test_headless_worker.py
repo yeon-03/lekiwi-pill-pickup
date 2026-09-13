@@ -191,6 +191,32 @@ def test_restart_pauses_and_resets_without_disconnecting():
     assert robot.connected is False  # 마지막엔 stop_event 로 정상 종료돼 연결 해제됨
 
 
+def test_go_home_rolls_out_and_resets_without_disconnecting():
+    """[처음 자세로] 는 [다시 시도]와 달리 실제로 RollOutPlayer 로 홈까지 이동시킨 뒤
+    (연결은 유지한 채) 새 세션을 준비한다."""
+    robot = FakeRobot()
+    w = _worker(robot)
+    w.resume()
+
+    rollout_calls = []
+    w._run_rollout = lambda current, home: rollout_calls.append((dict(current), dict(home)))
+
+    def on_obs():
+        if robot._obs_calls == 3:
+            w.go_home()
+        if robot._obs_calls >= 6:
+            w.stop_event.set()
+
+    robot.on_observation = on_obs
+    w.run()
+
+    # go_home 한 번 + 정상 종료 시 _shutdown 의 롤아웃, 합쳐서 최소 2번 호출돼야 한다
+    assert len(rollout_calls) >= 2
+    assert w.paused_event.is_set()
+    assert robot._obs_calls >= 6  # 연결 안 끊기고 계속 돎
+    assert robot.connected is False  # 마지막엔 stop_event 로 정상 종료돼 연결 해제됨
+
+
 def _worker_and_stuck_arm(*, max_pick_attempts=3, servo_give_up_s=1.0, pick_attempts=1):
     """SERVO 상태에서 손목캠을 오래 놓친(LOST) 상황을 그대로 재현한다 (전체 파이프라인을
     카메라/검출로 몰지 않고, 상태만 직접 강제해서 _recover_lost_servo() 만 초점 테스트).

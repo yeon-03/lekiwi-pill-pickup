@@ -13,6 +13,7 @@ class FakeWorker:
         self.stopped = False
         self.aborted = False
         self.restarted = False
+        self.went_home = False
 
     def resume(self):
         self.resumed = True
@@ -28,6 +29,9 @@ class FakeWorker:
 
     def restart(self):
         self.restarted = True
+
+    def go_home(self):
+        self.went_home = True
 
 
 def test_index_serves_static_page():
@@ -78,6 +82,14 @@ def test_restart_requests_restart():
     resp = client.post("/restart")
     assert resp.status_code == 200
     assert worker.restarted is True
+
+
+def test_home_requests_go_home():
+    worker = FakeWorker()
+    client = TestClient(create_app(worker))
+    resp = client.post("/home")
+    assert resp.status_code == 200
+    assert worker.went_home is True
 
 
 def test_status_returns_worker_status():
