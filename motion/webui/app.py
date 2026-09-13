@@ -58,6 +58,11 @@ def create_app(worker: Any) -> FastAPI:
         worker.request_abort()
         return {"ok": True}
 
+    @app.post("/restart")
+    def restart() -> dict[str, bool]:
+        worker.restart()
+        return {"ok": True}
+
     @app.get("/status")
     def status() -> dict[str, Any]:
         return worker.status.get()

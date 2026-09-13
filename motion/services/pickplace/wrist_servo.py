@@ -155,6 +155,11 @@ class GraspArgs:
     lost_timeout_s: float = 0.5
     # READY 가 되면 스크립트를 끝낸다 (팔은 그 자세로 남는다)
     exit_when_ready: bool = False
+    # LOST 가 이 시간(초) 이상 이어지면(대부분 너무 가까이 뻗어 카메라가 계속 못 봄)
+    # 놓친 게 아니라 "이번 시도 실패"로 보고 ArmSequencer 가 그리퍼를 벌리고 시작
+    # 자세로 물러났다가 재접근한다 (2026-09-13 실사용 중 발견: 이 로직이 없으면
+    # 다시 보일 때까지 영원히 그 자리에 멈춰있었다). 0 이면 이 복구를 하지 않는다.
+    servo_give_up_s: float = 3.0
 
     def load_reference(self) -> dict | None:
         """참조 파일이 있으면 읽어 목표 구성을 덮어쓴다. 읽은 dict 를 돌려준다 (없으면 None)."""
@@ -207,6 +212,8 @@ class GraspArgs:
                 raise PickPlaceError(f"error: grasp.gripper_close_pct 는 0~100 이어야 합니다 (받은 값: {self.gripper_close_pct})")
         if not 0.0 <= self.left_region_ratio <= 1.0 or not 0.0 <= self.left_min_conf <= 1.0:
             raise PickPlaceError("error: grasp.left_region_ratio / left_min_conf 는 0~1 이어야 합니다")
+        if self.servo_give_up_s < 0:
+            raise PickPlaceError(f"error: grasp.servo_give_up_s 는 0 이상이어야 합니다 (받은 값: {self.servo_give_up_s})")
         if self.y_anchor not in ("inside", "top", "center"):
             raise PickPlaceError(f"error: grasp.y_anchor 는 inside/top/center 중 하나여야 합니다 (받은 값: {self.y_anchor})")
         if self.y_tolerance_px < 0 or self.size_tolerance_px < 0 or self.refine_timeout_s < 0:

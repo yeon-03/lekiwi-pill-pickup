@@ -67,6 +67,7 @@ class PickPlaceHeadlessWorker:
         self.paused_event.set()  # 시작은 항상 일시정지 상태 — 조작자가 [시작] 을 눌러야 움직인다
         self.stop_event = threading.Event()
         self.abort_event = threading.Event()
+        self.restart_event = threading.Event()
 
         self._thread: threading.Thread | None = None
 
@@ -92,6 +93,14 @@ class PickPlaceHeadlessWorker:
         self.abort_event.set()
         self.stop_event.set()
 
+    def restart(self) -> None:
+        """[정지] 처럼 연결을 끊지 않고, 지금 자세를 새 기준으로 잡아 pick 을 처음부터
+        다시 준비한다 (일시정지 상태로 — [시작] 을 눌러야 움직인다). Physical Labs
+        GUI 앱의 `restart_pick()` UI 액션과 같은 역할: [정지]/[비상정지]는 세션을
+        완전히 끝내고 연결을 끊는 것이고(터미널 Ctrl+C 와 같은 급), 이건 연결을 유지한
+        채 같은 세션 안에서 다시 시도하는 것이다."""
+        self.restart_event.set()
+
     # ── 내부 헬퍼 ──
     @staticmethod
     def _latch_pose(obs: dict) -> dict[str, float]:
@@ -116,6 +125,25 @@ class PickPlaceHeadlessWorker:
         base = float(closed[GRIPPER_JOINT])
         g.gripper_close_pct = float(np.clip(base - g.gripper_close_extra_pct, 0.0, 100.0))
         return ""
+
+    def _recover_lost_servo(self, arm: ArmSequencer, allow_motion: bool, now: float) -> None:
+        """손목캠이 오래 놓친 채(LOST)면 — 놓친 게 아니라 이번 접근 실패로 보고
+        그리퍼를 벌리고 물러났다가 재접근한다 (2026-09-13 발견: 이 트리거가 없으면
+        다시 보일 때까지 영원히 그 자리에 멈춰있었다). 재시도 횟수를 다 쓰면 포기한다."""
+        g = self.cfg.grasp
+        if not (
+            allow_motion
+            and g.servo_give_up_s > 0
+            and arm.state == "SERVO"
+            and arm.servo is not None
+            and arm.servo.state == "LOST"
+            and now - arm.servo.last_seen >= g.servo_give_up_s
+        ):
+            return
+        if arm.pick_attempts < g.max_pick_attempts:
+            arm.restart_pick(now)
+        else:
+            arm.give_up()
 
     def _wait_for_first_frames(self) -> dict[str, Any] | None:
         deadline = time.perf_counter() + self._first_obs_timeout_s
@@ -179,6 +207,23 @@ class PickPlaceHeadlessWorker:
                     self.stop_event.wait(0.05)
                     continue
 
+                if self.restart_event.is_set():
+                    self.restart_event.clear()
+                    home = self._latch_pose(obs) or home
+                    pick_pose = self._filter_pose("pre_pick", home) if self.cfg.pick.enabled else None
+                    grasp_pose = (
+                        self._filter_pose("grasp", home)
+                        if (self.cfg.pick.enabled and self.cfg.grasp.enabled)
+                        else None
+                    )
+                    ap = Approacher(self.cfg.approach)
+                    arm = ArmSequencer(home, pick_pose, self.cfg.pick, self.cfg.grasp, grasp_pose)
+                    checker = GraspChecker(self.cfg.check)
+                    hold_pose = dict(home)
+                    self.paused_event.set()
+                    self.status.set({"state": "RESTART_READY", "dry_run": self.cfg.dry_run, "paused": True})
+                    continue
+
                 dets_by_view = self._infer(model, self.cfg.yolo, frames_bgr)
                 if (
                     self.cfg.grasp.enabled
@@ -216,6 +261,8 @@ class PickPlaceHeadlessWorker:
                     dt=interval,
                     descend_hint=descend_hint,
                 )
+
+                self._recover_lost_servo(arm, allow_motion, loop_start)
 
                 if self.cfg.check.enabled and arm.grasp_enabled and arm.state == "GRASPED":
                     if checker.state == "IDLE":

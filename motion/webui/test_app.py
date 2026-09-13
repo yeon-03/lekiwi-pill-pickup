@@ -12,6 +12,7 @@ class FakeWorker:
         self.paused = False
         self.stopped = False
         self.aborted = False
+        self.restarted = False
 
     def resume(self):
         self.resumed = True
@@ -24,6 +25,9 @@ class FakeWorker:
 
     def request_abort(self):
         self.aborted = True
+
+    def restart(self):
+        self.restarted = True
 
 
 def test_index_serves_static_page():
@@ -66,6 +70,14 @@ def test_estop_requests_abort():
     resp = client.post("/estop")
     assert resp.status_code == 200
     assert worker.aborted is True
+
+
+def test_restart_requests_restart():
+    worker = FakeWorker()
+    client = TestClient(create_app(worker))
+    resp = client.post("/restart")
+    assert resp.status_code == 200
+    assert worker.restarted is True
 
 
 def test_status_returns_worker_status():

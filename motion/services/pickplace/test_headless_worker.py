@@ -1,10 +1,10 @@
 import numpy as np
 import pytest
 
-from services.pickplace.arm_sequencer import PickArgs
+from services.pickplace.arm_sequencer import ArmSequencer, PickArgs
 from services.pickplace.config import PickPlaceConfig
 from services.pickplace.headless_worker import PickPlaceHeadlessWorker
-from services.pickplace.wrist_servo import GRIPPER_JOINT, GraspArgs
+from services.pickplace.wrist_servo import GRIPPER_JOINT, GraspArgs, WristServo
 
 
 class FakeRobot:
@@ -167,3 +167,84 @@ def test_abort_skips_rollout():
     # 마지막 액션의 팔 자세가 그대로 10.0 이어야 한다 (롤아웃 없이 즉시 정지)
     pan_values = [a["arm_shoulder_pan.pos"] for a in robot.sent_actions if "arm_shoulder_pan.pos" in a]
     assert pan_values[-1] == pytest.approx(10.0)
+
+
+def test_restart_pauses_and_resets_without_disconnecting():
+    """restart() 는 [정지]와 달리 연결을 끊지 않고 스레드가 계속 돌아야 한다 —
+    2026-09-13 실사용 중: [정지] 뒤 [시작]을 눌러도 스레드가 이미 끝나 있어 아무
+    반응이 없던 문제. restart()는 그 대신 쓰는, 연결 유지한 채 다시 준비하는 액션."""
+    robot = FakeRobot()
+    w = _worker(robot)
+    w.resume()
+
+    def on_obs():
+        if robot._obs_calls == 3:
+            w.restart()
+        if robot._obs_calls >= 6:
+            w.stop_event.set()  # 테스트를 끝내려고 나중에 정상 정지
+
+    robot.on_observation = on_obs
+    w.run()
+
+    assert robot._obs_calls >= 6  # restart 이후에도 스레드가 계속 관측을 읽었다(안 끊김)
+    assert w.status.get()["state"] != "ERROR"
+    assert robot.connected is False  # 마지막엔 stop_event 로 정상 종료돼 연결 해제됨
+
+
+def _worker_and_stuck_arm(*, max_pick_attempts=3, servo_give_up_s=1.0, pick_attempts=1):
+    """SERVO 상태에서 손목캠을 오래 놓친(LOST) 상황을 그대로 재현한다 (전체 파이프라인을
+    카메라/검출로 몰지 않고, 상태만 직접 강제해서 _recover_lost_servo() 만 초점 테스트).
+
+    _recover_lost_servo() 는 워커의 self.cfg.grasp 에서 게이트 값을 읽으므로, 워커와
+    ArmSequencer 가 같은 GraspArgs 인스턴스를 보게 만든다."""
+    grasp_cfg = GraspArgs(
+        approach_mode="joints", reach_joints={"arm_shoulder_lift.pos": 5.0},
+        max_pick_attempts=max_pick_attempts, servo_give_up_s=servo_give_up_s,
+    )
+    robot = FakeRobot()
+    cfg = PickPlaceConfig(pick=PickArgs(enabled=False), grasp=grasp_cfg)
+    w = _worker(robot, cfg=cfg)
+
+    home = {"arm_shoulder_pan.pos": 0.0, GRIPPER_JOINT: 0.0}
+    arm = ArmSequencer(home, home, PickArgs(), grasp_cfg, home)
+    arm.state = "SERVO"
+    arm.pick_attempts = pick_attempts
+    arm.servo = WristServo(grasp_cfg, home, home)
+    arm.servo.state = "LOST"
+    arm.servo.last_seen = 0.0
+    return w, arm
+
+
+def test_recover_lost_servo_restarts_pick_when_attempts_remain():
+    w, arm = _worker_and_stuck_arm(max_pick_attempts=3, servo_give_up_s=1.0, pick_attempts=1)
+
+    w._recover_lost_servo(arm, allow_motion=True, now=10.0)  # 10s 놓침 >> servo_give_up_s(1.0)
+
+    assert arm.state == "OPEN_GRIPPER"  # restart_pick() 이 호출됐다 (그리퍼 벌리기 → HOME_WAIT → HOME)
+    assert not arm.gave_up
+
+
+def test_recover_lost_servo_gives_up_when_attempts_exhausted():
+    w, arm = _worker_and_stuck_arm(max_pick_attempts=3, servo_give_up_s=1.0, pick_attempts=3)
+
+    w._recover_lost_servo(arm, allow_motion=True, now=10.0)
+
+    assert arm.gave_up
+
+
+def test_recover_lost_servo_does_nothing_before_give_up_timeout():
+    w, arm = _worker_and_stuck_arm(servo_give_up_s=3.0)
+
+    w._recover_lost_servo(arm, allow_motion=True, now=1.0)  # 1s 놓침 < servo_give_up_s(3.0)
+
+    assert arm.state == "SERVO"
+    assert not arm.gave_up
+
+
+def test_recover_lost_servo_does_nothing_when_paused():
+    w, arm = _worker_and_stuck_arm(servo_give_up_s=1.0)
+
+    w._recover_lost_servo(arm, allow_motion=False, now=10.0)  # 일시정지/dry-run 중
+
+    assert arm.state == "SERVO"
+    assert not arm.gave_up
