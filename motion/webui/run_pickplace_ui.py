@@ -78,12 +78,19 @@ class RunConfig:
 
 
 def _load_poses(cfg: RunConfig) -> dict[str, dict[str, float]]:
+    # draccus 는 `--grasp.xxx=...` 처럼 중첩 dataclass 필드를 하나라도 CLI 로 지정하면
+    # 그 dataclass 를 자기 자신의 클래스 기본값(GraspArgs 는 close_pose_file="")으로
+    # 다시 만들어서, 여기 RunConfig 의 default_factory 에 넣어둔 값(포즈 경로)이 날아간다
+    # (2026-09-13 실사용 중 발견: --grasp.target_size_px=300 만 줬는데 close_pose_file
+    # 이 빈 문자열이 되어 "그리퍼 값이 없습니다" 에러가 났다). 그래서 여기서 항상
+    # 기본 경로로 폴백한다 — cfg 필드가 비어 있어도 실제 파일 위치는 그대로 쓴다.
+    defaults = {
+        "pre_pick": cfg.pick.pose_file or str(_DEFAULT_POSES_DIR / "pre_pick.json"),
+        "grasp": cfg.grasp.grasp_pose_file or str(_DEFAULT_POSES_DIR / "grasp.json"),
+        "grasp_closed": cfg.grasp.close_pose_file or str(_DEFAULT_POSES_DIR / "grasp_closed.json"),
+    }
     poses: dict[str, dict[str, float]] = {}
-    for name, path in (
-        ("pre_pick", cfg.pick.pose_file),
-        ("grasp", cfg.grasp.grasp_pose_file),
-        ("grasp_closed", cfg.grasp.close_pose_file),
-    ):
+    for name, path in defaults.items():
         if path:
             poses[name] = load_pose(Path(path).expanduser())
     return poses
