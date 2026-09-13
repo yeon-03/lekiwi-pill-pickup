@@ -45,3 +45,45 @@ bash nav/shell/abo_color_test.sh "빨간약 가져다줘"   # 마이크 없이 �
 
 - 서로 ping 이 안 되면 피어 설정으로도 안 된다(NAT/AP 격리) → Tailscale 등 VPN IP 사용.
 - 설정을 바꾼 뒤엔 `ros2 daemon stop`.
+
+## 에이보 대답을 터미널 글자로 보기 (스피커가 안 나올 때)
+
+노트북에서 (에이보 도메인 77, 받기만 한다):
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source nav/shell/ros_peers.sh          # 같은 와이파이가 아니면
+python3 nav/tools/abo_console.py
+```
+
+```
+[16:54:31] 🗣  나     : 빨간약 가져다줘
+[16:54:31] 🤖 에이보 : 네, 빨간 약 가지러 갈게요.
+                    잠시만 기다려 주세요.
+[16:54:32] 📦 토픽   : /pickup/medicine/red  (data: 'red')
+[16:54:34] 🚗 르키위 : 빨간색 약을 향해 가는 중
+```
+
+`🤖 에이보` 줄이 TTS 가 읽었어야 할 문장이다 (`/llm_response`).
+
+## 르키위가 지금 무엇을 하는지 — 에이보 동반 웹앱 카드
+
+`medicine_relay.py` 는 명령을 넘기는 것과 반대 방향으로, 르키위의 `/abo/state`·`/abo/status`
+(도메인 42)를 받아 에이보 쪽 `/lekiwi/mission_state` (도메인 77, JSON)로 돌려보낸다.
+에이보 동반 웹앱(`http://<에이보 IP>:8000/`)의 **🚗 르키위 심부름** 카드와 위 터미널 뷰어가
+이걸 보여준다.
+
+| `/abo/state` | 카드 문장 (빨강 예) |
+|---|---|
+| (중계기가 명령을 넘긴 순간) `sent` | 빨간색 약을 가져오라고 르키위에게 전달했어요 |
+| `moving` | 빨간색 약을 향해 가는 중 |
+| `arrived` | 빨간색 약 앞에 도착했어요 |
+| `picking` | 빨간색 약을 집는 중 |
+| `returning` | 빨간색 약을 가지고 돌아오는 중 |
+| `done` | 빨간색 약을 가져왔어요 |
+| `failed` / `rejected` / `canceled` | 빨간색 약을 가져오지 못했어요 / 르키위가 요청을 거절했어요 / 르키위가 멈췄어요 |
+
+- 문구는 `nav/mission/mission_text.py` 한 곳에서 바꾼다 (웹앱·뷰어는 받은 문장을 그대로 표시).
+- 웹앱 쪽 코드는 A-Bo_project 의 `companion_bridge_node.py` + `lekiwi_status.py` + `web/companion/index.html`.
+  에이보 파이에 반영하려면 그 브랜치를 파이의 `robot_ws` 에 올리고 `colcon build` 후 `companion_bridge` 재시작.
+- 중계기가 안 떠 있으면 카드에는 토픽과 "빨간색 약 요청을 받았어요"까지만 보인다.
