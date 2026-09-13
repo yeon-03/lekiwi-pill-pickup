@@ -58,8 +58,10 @@ class GraspArgs:
     # 기준 x 의 목표 위치 (화면 중심 x 로부터 px). 0 = 세로선 위. 참조 파일이 있으면 거기 값으로 덮인다
     x_target_dx: int = 0
     # 세로 기준: inside(화면 중앙 높이가 박스 위/아래 사이면 OK) / top(박스 위 변을 y_target_dy 에) /
-    #            center(박스 중심을 y_target_dy 에)
-    #   큐브가 가까워지면 박스 아래 변이 화면 밖으로 잘리므로 중심보다 위 변이 믿을 만하다
+    #            center(박스 중심을 y_target_dy 에) / bottom(박스 아래 변을 y_target_dy 에)
+    #   큐브가 가까워지면 박스 아래 변이 화면 밖으로 잘리므로 중심보다 위 변이 믿을 만하다.
+    #   단, 병처럼 위쪽(뚜껑)과 아래쪽(몸통)의 잡히는 느낌이 다른 물체는 bottom 으로 몸통 쪽을
+    #   노리는 게 나을 수 있다 (2026-09-13 사용자 피드백: 위쪽을 잡으면 뚜껑이라 안 잡힘).
     y_anchor: str = "inside"
     # [top/center] 기준 y 의 목표 (화면 중심 y 로부터 px, 위가 음수)
     y_target_dy: int = 0
@@ -214,7 +216,7 @@ class GraspArgs:
             raise PickPlaceError("error: grasp.left_region_ratio / left_min_conf 는 0~1 이어야 합니다")
         if self.servo_give_up_s < 0:
             raise PickPlaceError(f"error: grasp.servo_give_up_s 는 0 이상이어야 합니다 (받은 값: {self.servo_give_up_s})")
-        if self.y_anchor not in ("inside", "top", "center"):
+        if self.y_anchor not in ("inside", "top", "center", "bottom"):
             raise PickPlaceError(f"error: grasp.y_anchor 는 inside/top/center 중 하나여야 합니다 (받은 값: {self.y_anchor})")
         if self.y_tolerance_px < 0 or self.size_tolerance_px < 0 or self.refine_timeout_s < 0:
             raise PickPlaceError("error: grasp.y_tolerance_px / size_tolerance_px / refine_timeout_s 는 0 이상이어야 합니다")
@@ -425,7 +427,7 @@ class WristServo:
             self.dy = by - cy0
             self.y_ok = inside_y
         else:
-            self.anchor_y = y1 if self.cfg.y_anchor == "top" else by
+            self.anchor_y = {"top": y1, "center": by, "bottom": y2}[self.cfg.y_anchor]
             self.dy = (self.anchor_y - cy0) - self.cfg.y_target_dy
             self.y_ok = abs(self.dy) <= self.cfg.y_tolerance_px
         # 뻗기 게이트: 가로는 맞아야 하고, 세로는 정확히 맞거나 최소한 중앙 높이가 박스 안이면 진행
@@ -502,7 +504,7 @@ def save_reference(
     # inside 모드였다면 위 변 기준으로 저장한다 (박스 아래가 잘려도 재현 가능)
     y_anchor = cfg.y_anchor if cfg.y_anchor != "inside" else "top"
     anchor_x = {"left": x1, "center": bx, "right": x2}[x_anchor]
-    anchor_y = y1 if y_anchor == "top" else by
+    anchor_y = {"top": y1, "center": by, "bottom": y2}[y_anchor]
     ref = {
         "name": Path(path).stem,
         "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),

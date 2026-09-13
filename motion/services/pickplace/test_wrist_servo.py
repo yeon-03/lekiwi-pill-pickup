@@ -73,3 +73,23 @@ def test_centering_box_disappearing_still_goes_lost():
 
     assert servo.state == "LOST"
     assert not servo.done
+
+
+def test_y_anchor_bottom_targets_box_bottom_edge_not_center():
+    """y_anchor=bottom 이면 박스 중심(center)이나 위 변(top)이 아니라 아래 변(y2)을
+    기준으로 세로 오차를 계산해야 한다 (2026-09-13 사용자 피드백: 병 위쪽[뚜껑]을
+    잡으면 안 잡히고, 아래쪽[몸통]을 겨냥해야 잘 잡힌다)."""
+    cfg = GraspArgs(approach_mode="joints", reach_joints={"arm_shoulder_lift.pos": 5.0}, y_anchor="bottom")
+    start = {"arm_shoulder_pan.pos": 0.0, "arm_shoulder_lift.pos": 0.0, "arm_wrist_flex.pos": 0.0, "arm_gripper.pos": 100.0}
+    servo = WristServo(cfg, start, None)
+    shape = (480, 640, 3)  # cy0 = 240
+
+    det = Detection(name="pill", conf=0.9, xyxy=(200, 100, 400, 300), cls=0)  # top=100 center=200 bottom=300
+    servo.update([det], shape, dt=1 / 30, now=0.0, allow_motion=True)
+
+    assert servo.anchor_y == 300  # 아래 변(y2), 중심(200)도 위 변(100)도 아니다
+    assert servo.dy == 300 - 240  # y_target_dy 기본값 0
+
+
+def test_y_anchor_bottom_accepted_by_validate():
+    GraspArgs(y_anchor="bottom").validate()
