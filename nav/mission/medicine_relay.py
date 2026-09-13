@@ -9,7 +9,7 @@
   입력  /abo/state, /abo/status         std_msgs/String  (LeKiwi abo_nav_bridge.py, 도메인 42)
   출력  /lekiwi/mission_state           std_msgs/String  JSON (도메인 77)
           {"state", "action_text": "빨간색 약을 향해 가는 중", "status", "color", "target", "dry_run", "ts",
-           "received_topic", "received_data", "received_at", "command"}
+           "received_topic", "received_data", "received_at", "command", "picked"}
           received_* 는 이 노트북이 **실제로 받은** 토픽이다 -- 에이보 웹앱이 보낸 토픽과 나란히 보여준다.
           명령을 넘긴 순간엔 state="sent". 문구는 mission_text.py 한 곳에서 만든다.
 
@@ -32,7 +32,7 @@ import rclpy
 from rclpy.context import Context
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 from color_intent import COLORS
 from mission_text import effective_state, mission_state_json
@@ -57,12 +57,14 @@ class MedicineRelay:
         self.last_state = None
         self.received = None     # 마지막으로 실제로 받은 토픽 {"topic", "data", "at"}
         self.command = ""        # 그걸로 만든 르키위 명령
+        self.picked = None       # 이번 미션 집기 결과 (노트북 집기 어댑터의 /abo/pick_done), 모르면 None
         # 르키위가 거절(rejected)하면 되돌릴 "진행 중이던 미션" 값. 미션 중에 다른 색이 들어오면
         # 브리지는 거절하는데, 그걸 모르고 색을 바꿔 두면 진행 중인 미션의 "돌아오는 중"이
         # 엉뚱한 색으로 표시된다 (2026-09-13 가짜 르키위 시험에서 발견).
         self.active = None
         lekiwi_node.create_subscription(String, "/abo/state", self.on_lekiwi_state, 10)
         lekiwi_node.create_subscription(String, "/abo/status", self.on_lekiwi_status, 10)
+        lekiwi_node.create_subscription(Bool, "/abo/pick_done", self.on_pick_done, 10)
         for color in COLORS:
             abo_node.create_subscription(
                 String, f"pickup/medicine/{color}",
@@ -76,12 +78,13 @@ class MedicineRelay:
         if self.last_state not in (None, "sent", "done", "failed", "rejected", "canceled", "idle"):
             # 진행 중인 미션이 있다 -- 새 명령이 거절되면 이 값으로 돌아간다.
             self.active = {"color": self.color, "received": self.received, "command": self.command,
-                           "state": self.last_state, "status": self.last_status}
+                           "state": self.last_state, "status": self.last_status, "picked": self.picked}
         else:
             self.active = None
         self.received = {"topic": f"/pickup/medicine/{color}", "data": msg.data, "at": round(time.time(), 3)}
         self.command = cmd
         self.color = color
+        self.picked = None
         self.last_status = ""
         self.last_state = "sent"
         self.publish_state("sent")
@@ -104,6 +107,14 @@ class MedicineRelay:
         if self.last_state:
             self.publish_state(self.last_state)
 
+    def on_pick_done(self, msg):
+        # 집기 결과. 브리지는 성공이든 실패든 재정합하면서 먼저 "returning" 을 보내므로 상태
+        # 이름만으로는 결과를 알 수 없다 -- 에이보가 "약 집기 성공했습니다"를 말할 수 있게 싣는다.
+        self.picked = bool(msg.data)
+        self.log.info(f"집기 결과 수신: /abo/pick_done {self.picked}")
+        if self.last_state:
+            self.publish_state(self.last_state)
+
     def on_lekiwi_state(self, msg):
         state = effective_state(self.last_state, msg.data)
         if msg.data == "rejected" and self.active:
@@ -113,6 +124,7 @@ class MedicineRelay:
             self.active = None
             self.color, self.received, self.command = prev["color"], prev["received"], prev["command"]
             self.last_state, self.last_status = prev["state"], prev["status"]
+            self.picked = prev.get("picked")
             self.log.info(f"새 명령이 거절돼 진행 중인 미션({self.color})으로 되돌림")
             return
         if msg.data not in ("rejected",):
@@ -122,7 +134,7 @@ class MedicineRelay:
 
     def publish_state(self, state):
         payload = mission_state_json(state, self.last_status, self.color, self.dest, self.dry_run,
-                                     received=self.received, command=self.command)
+                                     received=self.received, command=self.command, picked=self.picked)
         self.state_pub.publish(String(data=payload))
         self.log.info(f"에이보로 상태 전달: {payload}")
 
