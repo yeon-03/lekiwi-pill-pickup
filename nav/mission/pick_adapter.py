@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """자율주행(로봇)과 집기(노트북)를 잇는 어댑터.
 
-  /abo/pick_request (String)  받음  ->  pick_cycle.py 실행
+  /abo/pick_request (String)  받음  ->  집기 스크립트 실행 (--script)
   /abo/pick_done    (Bool)    보냄  <-  결과 JSON 판정
 
   ** 이 노드는 노트북에서 돈다. 로봇(Pi)이 아니다. **
@@ -29,8 +29,14 @@ ROS 를 전혀 모른다(requirements.txt 에 rclpy 가 없다). 그래서 ROS �
   "이름:색상"으로 색이 실려 온다 -- 그 경우 --map 보다 우선한다. 요청에 색이
   없으면(콜론 없음) 예전처럼 --map 을 그대로 쓴다.
 
+집기 스크립트 (--script)
+    python3 pick_adapter.py                        # scripts/pick_cycle.py (기본)
+    python3 pick_adapter.py --script yolo_pick     # yolo_and_pick/lekiwi_yolo_pick.py
+  색상/결과 파일/--model/--poses-dir/--remote-ip 는 스크립트에 맞는 인자 이름으로
+  번역해 넘긴다. 나머지 pick_args 는 번역 없이 그대로 넘어간다.
+
 결과 판정
-  pick_cycle.py 는 시작하자마자 결과 파일을 지우고, 끝나면 다시 쓴다.
+  두 스크립트 모두 시작하자마자 결과 파일을 지우고, 끝나면 다시 쓴다.
   따라서 "파일 없음"은 성공도 실패도 아닌 '끝나기 전에 죽음'이다 -- 셋 다
   복귀는 해야 하므로 pick_done=false 로 보내되, 로그는 구분해서 남긴다.
 """
@@ -53,11 +59,52 @@ from std_msgs.msg import Bool, String
 SKILL = "pill_pickup"
 RESULT = f"/tmp/lekiwi_result_{SKILL}.json"
 
+# --script 로 고르는 집기 스크립트. 둘 다 "시작하자마자 결과 파일 삭제, 끝나면
+# JSON 기록" 규약은 같고 인자 이름만 다르다 -- 번역은 여기서 한다.
+#   pick_cycle: scripts/pick_cycle.py (argparse, 하이픈)
+#   yolo_pick : yolo_and_pick/lekiwi_yolo_pick.py (roboseasy/lekiwi 원본, draccus, 점/언더스코어)
+SCRIPTS = {
+    "pick_cycle": "scripts/pick_cycle.py",
+    "yolo_pick": "yolo_and_pick/lekiwi_yolo_pick.py",
+}
+
+
+def color_args(script, color, result):
+    if script == "yolo_pick":
+        return [f"--target_color={color}", f"--result_file={result}"]
+    return ["--color", color, "--result-file", result]
+
+
+def setup_args(script, model, poses, remote_ip):
+    """--model/--poses-dir/--remote-ip 를 스크립트별 인자로 바꾼다. 빈 값은 뺀다."""
+    out = []
+    if script == "yolo_pick":
+        if model:
+            out.append(f"--yolo.path={model}")
+        if poses:
+            files = {"pick.pose_file": "pre_pick", "grasp.grasp_pose_file": "grasp",
+                     "grasp.close_pose_file": "grasp_closed", "grasp.ref_file": "grasp_ref"}
+            for key, name in files.items():
+                path = os.path.join(poses, name + ".json")
+                if os.path.isfile(path):
+                    out.append(f"--{key}={path}")
+        if remote_ip:
+            out.append(f"--robot.remote_ip={remote_ip}")
+        return out
+    if model:
+        out += ["--model", model]
+    if poses:
+        out += ["--poses-dir", poses]
+    if remote_ip:
+        out += ["--remote-ip", remote_ip]
+    return out
+
 
 class PickAdapter(Node):
-    def __init__(self, repo, mapping, timeout, python, extra):
+    def __init__(self, repo, mapping, timeout, python, extra, script="pick_cycle"):
         super().__init__("pick_adapter")
         self.repo = Path(repo).expanduser()
+        self.script = script
         self.mapping = mapping
         self.timeout = timeout
         self.python = python
@@ -73,12 +120,12 @@ class PickAdapter(Node):
         # 스레드에서 돌리고, 결과만 이 타이머가 받아 발행한다.
         self.create_timer(0.5, self.on_tick, callback_group=cbg)
 
-        script = self.repo / "scripts" / "pick_cycle.py"
+        script = self.repo / SCRIPTS[self.script]
         if not script.is_file():
-            self.get_logger().error(f"pick_cycle.py 를 찾지 못했다: {script}")
+            self.get_logger().error(f"집기 스크립트를 찾지 못했다: {script}")
             self.get_logger().error("--repo 로 저장소 경로를 지정할 것.")
         self.get_logger().info(
-            f"준비됨. repo={self.repo}  매핑={self.mapping}  "
+            f"준비됨. repo={self.repo}  스크립트={SCRIPTS[self.script]}  매핑={self.mapping}  "
             f"제한시간={self.timeout:.0f}초  도메인={os.environ.get('ROS_DOMAIN_ID','0')}")
 
     # --- 요청 ---------------------------------------------------------------
@@ -116,7 +163,7 @@ class PickAdapter(Node):
             return
 
         self.busy = True
-        self.get_logger().info(f"집기 시작: {raw} -> --color {color}")
+        self.get_logger().info(f"집기 시작: {raw} -> 색상 {color}")
         threading.Thread(target=self.run_pick, args=(color,), daemon=True).start()
 
     # --- 집기 실행 (별도 스레드) --------------------------------------------
@@ -126,8 +173,8 @@ class PickAdapter(Node):
             # 지난 실행 결과가 남아 있으면 이번 것으로 오독된다.
             Path(RESULT).unlink(missing_ok=True)
 
-            cmd = [self.python, "scripts/pick_cycle.py",
-                   "--color", color, "--result-file", RESULT] + self.extra
+            cmd = ([self.python, SCRIPTS[self.script]]
+                   + color_args(self.script, color, RESULT) + self.extra)
             self.get_logger().info("실행: " + " ".join(cmd))
             t0 = time.time()
             p = subprocess.run(cmd, cwd=self.repo, timeout=self.timeout,
@@ -137,7 +184,7 @@ class PickAdapter(Node):
             if p.returncode != 0:
                 tail = (p.stderr or "").strip().splitlines()[-3:]
                 self.get_logger().error(
-                    f"pick_cycle.py 종료코드 {p.returncode} ({dt:.0f}초)")
+                    f"{SCRIPTS[self.script]} 종료코드 {p.returncode} ({dt:.0f}초)")
                 for line in tail:
                     self.get_logger().error("  " + line)
 
@@ -202,7 +249,10 @@ def main():
     ap = argparse.ArgumentParser(
         description="자율주행(로봇)과 집기(노트북)를 잇는다. 노트북에서 실행할 것.")
     ap.add_argument("--repo", default="~/lekiwi-pill-pickup",
-                    help="집기 저장소 경로 (scripts/pick_cycle.py 가 있는 곳)")
+                    help="집기 저장소 경로 (scripts/, yolo_and_pick/ 이 있는 곳)")
+    ap.add_argument("--script", choices=sorted(SCRIPTS), default="pick_cycle",
+                    help="실행할 집기 스크립트. pick_cycle=scripts/pick_cycle.py, "
+                         "yolo_pick=yolo_and_pick/lekiwi_yolo_pick.py")
     ap.add_argument("--map", type=parse_map, default="center=green",
                     help="목적지=색상 대응. 예: center=green,left=red,right=blue")
     ap.add_argument("--timeout", type=float, default=150.0,
@@ -226,7 +276,8 @@ def main():
     ap.add_argument("--remote-ip", default=os.environ.get("LEKIWI_HOST_IP", ""),
                     help="로봇 주소. 환경변수 LEKIWI_HOST_IP (무선은 DHCP 라 바뀐다)")
     ap.add_argument("pick_args", nargs="*",
-                    help="pick_cycle.py 에 그대로 넘길 인자 (예: -- --grasp-lift 68)")
+                    help="집기 스크립트에 그대로 넘길 인자 (예: -- --grasp-lift 68, "
+                         "yolo_pick 이면 -- --display=none)")
     a = ap.parse_args()
 
     mapping = a.map if isinstance(a.map, dict) else parse_map(a.map)
@@ -243,12 +294,11 @@ def main():
 
     # 줄 수 있는 건 시작할 때 검사한다 -- 집기 도중에 알게 되면 로봇이 이미
     # 목적지까지 간 뒤다.
-    pick_opts = []
+    model = poses = ""
     if a.model:
         model = os.path.expanduser(a.model)
         if not os.path.isfile(model):
             ap.error(f"YOLO 모델 파일이 없다: {model}")
-        pick_opts += ["--model", model]
     if a.poses_dir:
         poses = os.path.expanduser(a.poses_dir)
         if not os.path.isdir(poses):
@@ -257,15 +307,15 @@ def main():
                    if not os.path.isfile(os.path.join(poses, n + ".json"))]
         if missing:
             print(f"경고: 자세 파일 없음 {missing}", file=sys.stderr)
-        pick_opts += ["--poses-dir", poses]
-    if a.remote_ip:
-        pick_opts += ["--remote-ip", a.remote_ip]
-    if not (a.model and a.poses_dir):
+    pick_opts = setup_args(a.script, model, poses, a.remote_ip)
+    # lekiwi_yolo_pick.py 는 안 주면 yolo_and_pick/weights/best.pt, poses/*.json 을 쓴다.
+    if a.script == "pick_cycle" and not (a.model and a.poses_dir):
         print("경고: --model/--poses-dir 이 없다. 실제 pick_cycle.py 는 둘 다 필수라 "
               "집기가 바로 실패한다 (시험용 가짜 pick_cycle 이면 무시)", file=sys.stderr)
 
     rclpy.init()
-    node = PickAdapter(a.repo, mapping, a.timeout, python, pick_opts + list(a.pick_args))
+    node = PickAdapter(a.repo, mapping, a.timeout, python,
+                       pick_opts + list(a.pick_args), a.script)
     ex = MultiThreadedExecutor(num_threads=2)
     ex.add_node(node)
     try:
