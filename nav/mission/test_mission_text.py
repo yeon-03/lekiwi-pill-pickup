@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from mission_text import action_text, mission_state_json  # noqa: E402
+from mission_text import action_text, effective_state, mission_state_json  # noqa: E402
 
 
 class TestActionText(unittest.TestCase):
@@ -28,6 +28,21 @@ class TestActionText(unittest.TestCase):
     def test_unknown_state_falls_back_to_status(self):
         self.assertEqual(action_text("weird", "red", "제 위치를 다시 확인할게요."), "제 위치를 다시 확인할게요.")
         self.assertEqual(action_text("weird"), "weird")
+
+
+class TestEffectiveState(unittest.TestCase):
+    def test_moving_after_pick_is_returning(self):
+        self.assertEqual(effective_state("picking", "moving"), "returning")
+        self.assertEqual(effective_state("returning", "moving"), "returning")
+
+    def test_moving_before_pick_stays_moving(self):
+        self.assertEqual(effective_state("sent", "moving"), "moving")
+        self.assertEqual(effective_state(None, "moving"), "moving")
+        self.assertEqual(effective_state("moving", "moving"), "moving")
+
+    def test_other_states_unchanged(self):
+        self.assertEqual(effective_state("picking", "done"), "done")
+        self.assertEqual(effective_state("returning", "failed"), "failed")
 
 
 class TestMissionStateJson(unittest.TestCase):

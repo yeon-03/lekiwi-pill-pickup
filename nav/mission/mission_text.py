@@ -28,6 +28,19 @@ STATE_TEXT = {
 }
 
 
+# 집기 뒤의 "moving" 은 출발 자리로 돌아가는 주행이다 -- 브리지는 복귀할 때도 go() 가
+# state="moving" 을 보낸다. 그대로 쓰면 "약을 가지고 돌아오는 중" 다음에 "약을 향해 가는 중"이
+# 다시 떠서 사용자를 헷갈리게 한다 (2026-09-13 가짜 르키위 시험에서 발견).
+AFTER_PICK = ("picking", "returning")
+
+
+def effective_state(prev_state, state):
+    """직전 상태를 보고 표시용 상태를 고른다. 집기 뒤 moving -> returning."""
+    if state == "moving" and prev_state in AFTER_PICK:
+        return "returning"
+    return state
+
+
 def action_text(state, color=None, status=""):
     """상태와 색으로 문장을 만든다. 모르는 상태면 브리지가 보낸 status 를 그대로 쓴다."""
     tmpl = STATE_TEXT.get(state)

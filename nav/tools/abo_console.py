@@ -34,6 +34,7 @@ class AboConsole(Node):
         super().__init__("abo_console")
         self.out = out
         self.in_reply = False
+        self.last_mission_line = None   # 같은 문장이 연달아 오면(상태·설명 재발행) 한 번만 찍는다
         self.create_subscription(String, "/user_input", self.on_user_input, 10)
         self.create_subscription(String, "/llm_response", self.on_reply, 10)
         self.create_subscription(Empty, "/llm_response_done", self.on_reply_done, 10)
@@ -77,7 +78,11 @@ class AboConsole(Node):
             self.say(f"[{stamp()}] 📥 노트북 : {d['received_topic']}  (data: {d.get('received_data')!r}) 받음")
             if d.get("command"):
                 self.say(f"[{stamp()}] ➡️  명령   : {d['command']}{extra}")
-        self.say(f"[{stamp()}] 🚗 르키위 : {text}{extra}")
+        line = f"{text}{extra}"
+        if line == self.last_mission_line and d.get("state") != "sent":
+            return
+        self.last_mission_line = line
+        self.say(f"[{stamp()}] 🚗 르키위 : {line}")
 
 
 def main():

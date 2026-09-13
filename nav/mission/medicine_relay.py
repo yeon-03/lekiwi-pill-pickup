@@ -35,7 +35,7 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 from color_intent import COLORS
-from mission_text import mission_state_json
+from mission_text import effective_state, mission_state_json
 
 
 def fetch_command(dest, color):
@@ -57,6 +57,10 @@ class MedicineRelay:
         self.last_state = None
         self.received = None     # 마지막으로 실제로 받은 토픽 {"topic", "data", "at"}
         self.command = ""        # 그걸로 만든 르키위 명령
+        # 르키위가 거절(rejected)하면 되돌릴 "진행 중이던 미션" 값. 미션 중에 다른 색이 들어오면
+        # 브리지는 거절하는데, 그걸 모르고 색을 바꿔 두면 진행 중인 미션의 "돌아오는 중"이
+        # 엉뚱한 색으로 표시된다 (2026-09-13 가짜 르키위 시험에서 발견).
+        self.active = None
         lekiwi_node.create_subscription(String, "/abo/state", self.on_lekiwi_state, 10)
         lekiwi_node.create_subscription(String, "/abo/status", self.on_lekiwi_status, 10)
         for color in COLORS:
@@ -69,6 +73,12 @@ class MedicineRelay:
             self.log.warn(f"pickup/medicine/{color} 에 data={msg.data!r} -- 토픽 색({color})을 쓴다")
         self.log.info(f"수신: pickup/medicine/{color}")
         cmd = fetch_command(self.dest, color)
+        if self.last_state not in (None, "sent", "done", "failed", "rejected", "canceled", "idle"):
+            # 진행 중인 미션이 있다 -- 새 명령이 거절되면 이 값으로 돌아간다.
+            self.active = {"color": self.color, "received": self.received, "command": self.command,
+                           "state": self.last_state, "status": self.last_status}
+        else:
+            self.active = None
         self.received = {"topic": f"/pickup/medicine/{color}", "data": msg.data, "at": round(time.time(), 3)}
         self.command = cmd
         self.color = color
@@ -95,8 +105,20 @@ class MedicineRelay:
             self.publish_state(self.last_state)
 
     def on_lekiwi_state(self, msg):
-        self.last_state = msg.data
-        self.publish_state(msg.data)
+        state = effective_state(self.last_state, msg.data)
+        if msg.data == "rejected" and self.active:
+            # 방금 넘긴 명령만 거절됐다 -- 진행 중이던 미션 값으로 되돌리고, 거절은 한 번 알린다.
+            self.publish_state("rejected")
+            prev = self.active
+            self.active = None
+            self.color, self.received, self.command = prev["color"], prev["received"], prev["command"]
+            self.last_state, self.last_status = prev["state"], prev["status"]
+            self.log.info(f"새 명령이 거절돼 진행 중인 미션({self.color})으로 되돌림")
+            return
+        if msg.data not in ("rejected",):
+            self.active = None if state in ("done", "failed", "canceled") else self.active
+        self.last_state = state
+        self.publish_state(state)
 
     def publish_state(self, state):
         payload = mission_state_json(state, self.last_status, self.color, self.dest, self.dry_run,
