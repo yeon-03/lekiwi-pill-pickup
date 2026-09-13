@@ -61,16 +61,16 @@ class GraspCheckArgs:
             raise PickPlaceError("error: check.band_px 는 0 보다, inset_px 는 0 이상이어야 합니다")
         if self.front_band_scale <= 0:
             raise PickPlaceError(f"error: check.front_band_scale 은 0 보다 커야 합니다 (받은 값: {self.front_band_scale})")
+        if not 0.0 < self.min_purple_ratio <= 1.0:
+            raise PickPlaceError(f"error: check.min_purple_ratio 는 0~1 사이여야 합니다 (받은 값: {self.min_purple_ratio})")
+        if self.confirm_frames < 1 or self.timeout_s <= 0:
+            raise PickPlaceError("error: check.confirm_frames 는 1 이상, timeout_s 는 0 보다 커야 합니다")
 
     def band_px_for(self, view: str) -> int:
         """뷰별 띠 폭 — front 는 `band_px × front_band_scale`, 그 외는 `band_px`."""
         if view == self.front_view:
             return max(1, int(round(self.band_px * self.front_band_scale)))
         return self.band_px
-        if not 0.0 < self.min_purple_ratio <= 1.0:
-            raise PickPlaceError(f"error: check.min_purple_ratio 는 0~1 사이여야 합니다 (받은 값: {self.min_purple_ratio})")
-        if self.confirm_frames < 1 or self.timeout_s <= 0:
-            raise PickPlaceError("error: check.confirm_frames 는 1 이상, timeout_s 는 0 보다 커야 합니다")
 
 
 def purple_mask(frame_bgr: np.ndarray, cfg: GraspCheckArgs) -> np.ndarray:
