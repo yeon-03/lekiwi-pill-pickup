@@ -236,6 +236,12 @@ class PickPlaceHeadlessWorker:
                     self.home_event.clear()
                     self.paused_event.set()
                     current = self._latch_pose(obs)
+                    # "처음 자세" = 세션 연결 시점에 팔이 우연히 있던 자세가 아니라, 저장해 둔
+                    # pre_pick.json 이어야 한다 (2026-09-13 실사용 중 발견: 연결 시점 자세를
+                    # 그대로 home 으로 쓰면, 마지막으로 팔을 어디에 뒀었는지에 따라 "처음
+                    # 자세로"가 아무 효과도 없어 보일 수 있었다). pre_pick 이 없으면(예:
+                    # --pick.enabled=false) 세션 시작 자세로 대체한다.
+                    home = self._filter_pose("pre_pick", current) or home
                     if not self.cfg.dry_run and current and home:
                         self.status.set({"state": "GOING_HOME", "dry_run": self.cfg.dry_run, "paused": True})
                         self._run_rollout(current, home)

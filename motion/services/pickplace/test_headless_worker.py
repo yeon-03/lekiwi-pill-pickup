@@ -214,6 +214,40 @@ def test_go_home_rolls_out_and_resets_without_disconnecting():
     assert len(rollout_calls) >= 2
     assert w.paused_event.is_set()
     assert robot._obs_calls >= 6  # 연결 안 끊기고 계속 돎
+
+
+def test_go_home_targets_saved_pre_pick_not_connect_time_pose():
+    """2026-09-13 실사용 중 발견: home 을 "세션 연결 시점에 팔이 있던 자세"로 그대로
+    쓰면, 마지막으로 팔을 어디에 뒀었는지에 따라 [처음 자세로] 가 아무 효과도 없어
+    보일 수 있었다(이미 그 자리라서). 저장된 pre_pick.json 을 목표로 삼아야 한다."""
+    robot = FakeRobot()  # 연결 시점 자세: 전부 0.0
+    saved_pre_pick = {
+        "arm_shoulder_pan.pos": 5.98,
+        "arm_shoulder_lift.pos": 58.95,
+        "arm_elbow_flex.pos": -54.99,
+        "arm_wrist_flex.pos": 47.25,
+        "arm_wrist_roll.pos": -16.13,
+        GRIPPER_JOINT: 1.36,
+    }
+    w = _worker(robot, poses={"pre_pick": saved_pre_pick})
+    w.resume()
+
+    rollout_calls = []
+    w._run_rollout = lambda current, home: rollout_calls.append((dict(current), dict(home)))
+
+    def on_obs():
+        if robot._obs_calls == 3:
+            w.go_home()
+        if robot._obs_calls >= 6:
+            w.stop_event.set()
+
+    robot.on_observation = on_obs
+    w.run()
+
+    go_home_call = rollout_calls[0]
+    _current, target_home = go_home_call
+    assert target_home["arm_shoulder_pan.pos"] == 5.98
+    assert target_home["arm_shoulder_lift.pos"] == 58.95
     assert robot.connected is False  # 마지막엔 stop_event 로 정상 종료돼 연결 해제됨
 
 
