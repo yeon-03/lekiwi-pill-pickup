@@ -374,10 +374,15 @@ class AboNav(Node):
         if not self.set_bus(False):
             self.mission = None
             return self.say("바퀴 제어를 넘기지 못해 집기를 시작하지 않았어요.", "failed")
+        # 한 번 더 시도한다 -- 호스트가 카메라를 여는 순간 USB 카메라가 끊겼다 다시 잡혀
+        # "Failed to open OpenCVCamera" 로 바로 죽은 적이 있다 (2026-09-13 실기기, 전원 저하 없음).
         if not self.host_start():
-            self.mission = None
-            self.set_bus(True)
-            return self.say("팔 제어를 시작하지 못했어요.", "failed")
+            self.get_logger().warn("ZMQ 호스트 기동 실패 -- 3초 뒤 한 번 더 시도")
+            time.sleep(3.0)
+            if not self.host_start():
+                self.set_bus(True)
+                # 제자리에 세워 두지 않고 출발 자리로 돌린다 (집기 실패와 같게).
+                return self.return_after_pick(False, "팔 제어를 시작하지 못했어요.")
         color = self.mission.get("color")
         payload = f'{self.mission["target"]}:{color}' if color else self.mission["target"]
         self.pub_pick.publish(String(data=payload))
@@ -399,22 +404,32 @@ class AboNav(Node):
         self.host_stop()
         self.set_bus(True)
         if not msg.data:
-            self.mission = None
-            return self.say("물건을 집지 못했어요.", "failed")
+            # 집기 워커가 재시도(기본 5번)를 다 쓰고 포기했다 -- 그 자리에 두지 않고 출발 자리로 돌린다.
+            return self.return_after_pick(False, "물건을 집지 못했어요.")
+        self.return_after_pick(True, "집었어요.")
+
+    def return_after_pick(self, picked, text):
+        """집기가 끝나면(성공이든 실패든) 버스를 회수한 뒤 호출 -- 재정합하고 출발 자리로 복귀."""
         # pick 이 베이스를 움직였다. 넓게 훑어야 한다 (moved=True 주석 참고).
         self.relocalize(at=self._wp(self.mission["target"]), moved=True)
         rt = self.mission["return_to"]
         pt = self.mission["return_pt"]
         self.mission["phase"] = "returning"
-        self.say(f"집었어요. {rt} 으로 돌아갈게요.", "returning")
+        self.mission["picked"] = picked
+        self.say(f"{text} {rt} 으로 돌아갈게요.", "returning")
         self.go(pt["x"], pt["y"], math.radians(pt.get("yaw", 0.0)), rt)
 
     def on_tick(self):
         if self.mission and self.mission["phase"] == "picking" \
            and time.time() > self.pick_deadline:
-            self.mission = None
+            self.mission["phase"] = "pick_timeout"   # 복귀 전에 pick_done 이 늦게 와도 무시되게
             self.host_stop(); self.set_bus(True)
-            self.say("물건 집기가 너무 오래 걸려서 그만둘게요.", "failed")
+            try:
+                self.return_after_pick(False, "물건 집기가 너무 오래 걸려서 그만둘게요.")
+            except Exception as e:
+                self.get_logger().error(f"시간초과 복귀 실패: {e}")
+                self.mission = None
+                self.say("물건 집기를 그만뒀지만 돌아가지 못했어요.", "failed")
 
     def cancel(self):
         if self.gh is None:
@@ -469,7 +484,10 @@ class AboNav(Node):
                 return self.begin_pick()
             if self.mission and self.mission["phase"] == "returning":
                 self.relocalize(at=self.mission.get("return_pt"), state="returning")
+                picked = self.mission.get("picked", True)
                 self.mission = None
+                if not picked:
+                    return self.say("돌아왔어요. 물건은 집지 못했어요.", "failed")
                 return self.say("돌아왔어요. 다 끝났어요.", "done")
             self.say("도착했어요.", "arrived")
         elif st == 5:    # CANCELED

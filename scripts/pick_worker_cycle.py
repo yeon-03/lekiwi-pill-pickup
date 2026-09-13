@@ -92,6 +92,8 @@ def parse_args(argv=None):
                     help="이 시간 안에 못 끝내면 멈추고 실패로 기록")
     ap.add_argument("--rollout-time", type=float, default=2.0,
                     help="멈출 때 팔을 시작 자세로 되돌리는 시간(초)")
+    ap.add_argument("--max-pick-attempts", type=int, default=None,
+                    help="접근부터 다시 집는 최대 횟수(첫 시도 포함). 다 쓰면 포기. 기본은 워커 설정(5)")
     ap.add_argument("--dry-run", action="store_true", help="계산만 하고 실제로 움직이지 않음")
     return ap.parse_args(argv)
 
@@ -229,6 +231,8 @@ def main(argv=None) -> int:
         cfg = PickPlaceConfig()
         cfg.yolo = YoloArgs(path=os.path.expanduser(args.model), conf=args.conf)
         cfg.dry_run = args.dry_run
+        if args.max_pick_attempts is not None:
+            cfg.grasp.max_pick_attempts = args.max_pick_attempts
         cfg.validate()
 
         model = load_model(cfg.yolo)
