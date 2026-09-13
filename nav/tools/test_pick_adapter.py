@@ -172,6 +172,74 @@ def case_duplicate():
     return ok
 
 
+def case_explicit_color_overrides_map():
+    """"center:red" 처럼 요청에 색이 실려오면 --map(center=green)보다 우선해야 한다.
+    stub pick_cycle.py 가 실제로 받은 --color 를 결과 파일에 그대로 적어주므로
+    그 필드로 확인한다(pick_done 자체는 색과 무관하게 mode=ok 면 항상 true라
+    구분이 안 됨)."""
+    name = "발화로 고른 색이 --map 보다 우선"
+    Path(RESULT).unlink(missing_ok=True)
+    proc = start_adapter(stub_repo(), "ok", 8)
+    out = ""
+    try:
+        h = Harness()
+        if not h.wait_adapter():
+            h.destroy_node()
+            print(f"  [FAIL] {name}: 어댑터가 뜨지 않았다")
+            show(stop(proc))
+            return False
+        h.got.clear()
+        h.pub.publish(String(data="center:red"))   # --map 은 center=green
+        t0 = time.time()
+        while not h.got and time.time() - t0 < 15.0:
+            rclpy.spin_once(h, timeout_sec=0.1)
+        h.destroy_node()
+    finally:
+        out = stop(proc)
+    try:
+        used_color = json.loads(Path(RESULT).read_text(encoding="utf-8"))["color"]
+    except (OSError, ValueError, KeyError):
+        used_color = None
+    ok = used_color == "red"
+    print(f"  [{'PASS' if ok else 'FAIL'}] {name}: 실제 사용된 색={used_color} (기대 red)")
+    if not ok:
+        show(out)
+    return ok
+
+
+def case_no_color_in_request_falls_back_to_map():
+    """콜론 없는 요청("center")은 예전처럼 --map 값(green)을 그대로 써야 한다
+    -- 기존 배치(웨이포인트별 고정 색)와의 하위호환 확인."""
+    name = "색 없는 요청은 --map 으로 폴백"
+    Path(RESULT).unlink(missing_ok=True)
+    proc = start_adapter(stub_repo(), "ok", 8)
+    out = ""
+    try:
+        h = Harness()
+        if not h.wait_adapter():
+            h.destroy_node()
+            print(f"  [FAIL] {name}: 어댑터가 뜨지 않았다")
+            show(stop(proc))
+            return False
+        h.got.clear()
+        h.pub.publish(String(data="center"))
+        t0 = time.time()
+        while not h.got and time.time() - t0 < 15.0:
+            rclpy.spin_once(h, timeout_sec=0.1)
+        h.destroy_node()
+    finally:
+        out = stop(proc)
+    try:
+        used_color = json.loads(Path(RESULT).read_text(encoding="utf-8"))["color"]
+    except (OSError, ValueError, KeyError):
+        used_color = None
+    ok = used_color == "green"
+    print(f"  [{'PASS' if ok else 'FAIL'}] {name}: 실제 사용된 색={used_color} (기대 green)")
+    if not ok:
+        show(out)
+    return ok
+
+
 def main():
     if not ADAPTER.is_file():
         print(f"pick_adapter.py 를 찾지 못했다: {ADAPTER}")
@@ -191,6 +259,8 @@ def main():
             case("두 번째 매핑도 동작(left=red)", "ok", "left", True),
             case("제한시간 초과 -> false", "hang", "center", False, wait=25.0),
             case_duplicate(),
+            case_explicit_color_overrides_map(),
+            case_no_color_in_request_falls_back_to_map(),
         ]
     finally:
         rclpy.shutdown()
