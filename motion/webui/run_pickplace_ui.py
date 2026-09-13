@@ -102,7 +102,10 @@ def main(cfg: RunConfig) -> None:
 
     app = create_app(worker)
     try:
-        uvicorn.run(app, host=cfg.host, port=cfg.port)
+        # timeout_graceful_shutdown 을 짧게 주지 않으면, 브라우저가 /stream/* 을 계속
+        # 물고 있는 동안(무한 MJPEG) uvicorn 이 그 연결이 끊기길 무한정 기다려서
+        # Ctrl+C/SIGTERM 이 먹통이 된다 (2026-09-13 실사용 중 발견 — 매번 강제 종료해야 했음).
+        uvicorn.run(app, host=cfg.host, port=cfg.port, timeout_graceful_shutdown=3)
     finally:
         worker.request_stop()
         worker.join(timeout=30.0)
