@@ -8,7 +8,9 @@
   되돌림 (LeKiwi -> 에이보, 에이보 동반 웹앱·터미널 뷰어가 "지금 무엇을 하는지" 보여주도록)
   입력  /abo/state, /abo/status         std_msgs/String  (LeKiwi abo_nav_bridge.py, 도메인 42)
   출력  /lekiwi/mission_state           std_msgs/String  JSON (도메인 77)
-          {"state", "action_text": "빨간색 약을 향해 가는 중", "status", "color", "target", "dry_run", "ts"}
+          {"state", "action_text": "빨간색 약을 향해 가는 중", "status", "color", "target", "dry_run", "ts",
+           "received_topic", "received_data", "received_at", "command"}
+          received_* 는 이 노트북이 **실제로 받은** 토픽이다 -- 에이보 웹앱이 보낸 토픽과 나란히 보여준다.
           명령을 넘긴 순간엔 state="sent". 문구는 mission_text.py 한 곳에서 만든다.
 
   ** 이 노드는 노트북에서 돈다 (에이보 whisper/dialogue 와 같은 노트북). **
@@ -24,6 +26,7 @@ ROS_DOMAIN_ID 는 무시하고 --abo-domain/--lekiwi-domain 을 쓴다.
 """
 import argparse
 import threading
+import time
 
 import rclpy
 from rclpy.context import Context
@@ -52,6 +55,8 @@ class MedicineRelay:
         self.color = None
         self.last_status = ""
         self.last_state = None
+        self.received = None     # 마지막으로 실제로 받은 토픽 {"topic", "data", "at"}
+        self.command = ""        # 그걸로 만든 르키위 명령
         lekiwi_node.create_subscription(String, "/abo/state", self.on_lekiwi_state, 10)
         lekiwi_node.create_subscription(String, "/abo/status", self.on_lekiwi_status, 10)
         for color in COLORS:
@@ -64,6 +69,8 @@ class MedicineRelay:
             self.log.warn(f"pickup/medicine/{color} 에 data={msg.data!r} -- 토픽 색({color})을 쓴다")
         self.log.info(f"수신: pickup/medicine/{color}")
         cmd = fetch_command(self.dest, color)
+        self.received = {"topic": f"/pickup/medicine/{color}", "data": msg.data, "at": round(time.time(), 3)}
+        self.command = cmd
         self.color = color
         self.last_status = ""
         self.last_state = "sent"
@@ -92,7 +99,8 @@ class MedicineRelay:
         self.publish_state(msg.data)
 
     def publish_state(self, state):
-        payload = mission_state_json(state, self.last_status, self.color, self.dest, self.dry_run)
+        payload = mission_state_json(state, self.last_status, self.color, self.dest, self.dry_run,
+                                     received=self.received, command=self.command)
         self.state_pub.publish(String(data=payload))
         self.log.info(f"에이보로 상태 전달: {payload}")
 

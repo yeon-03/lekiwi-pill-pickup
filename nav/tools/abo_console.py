@@ -71,7 +71,12 @@ class AboConsole(Node):
             text = d.get("action_text") or d.get("state")
             extra = " (연습 모드 -- 르키위로는 안 보냄)" if d.get("dry_run") else ""
         except ValueError:
-            text, extra = msg.data, ""
+            d, text, extra = {}, msg.data, ""
+        if d.get("state") == "sent" and d.get("received_topic"):
+            # 노트북 중계기가 실제로 받은 토픽과, 그걸로 만든 르키위 명령
+            self.say(f"[{stamp()}] 📥 노트북 : {d['received_topic']}  (data: {d.get('received_data')!r}) 받음")
+            if d.get("command"):
+                self.say(f"[{stamp()}] ➡️  명령   : {d['command']}{extra}")
         self.say(f"[{stamp()}] 🚗 르키위 : {text}{extra}")
 
 

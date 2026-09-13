@@ -39,6 +39,20 @@ class TestMissionStateJson(unittest.TestCase):
         self.assertEqual(d["status"], "가는 중이에요. 1.2 m 남았어요.")
         self.assertEqual((d["color"], d["target"], d["dry_run"], d["ts"]), ("red", "center", False, 100.0))
 
+    def test_received_topic_and_command(self):
+        d = json.loads(mission_state_json(
+            "sent", color="red", target="center", dry_run=True, now=5.0,
+            received={"topic": "/pickup/medicine/red", "data": "red", "at": 4.9},
+            command="fetch center color:red"))
+        self.assertEqual((d["received_topic"], d["received_data"], d["received_at"]),
+                         ("/pickup/medicine/red", "red", 4.9))
+        self.assertEqual(d["command"], "fetch center color:red")
+
+    def test_received_defaults_empty(self):
+        d = json.loads(mission_state_json("moving", color="red"))
+        self.assertIsNone(d["received_topic"])
+        self.assertEqual(d["command"], "")
+
     def test_korean_not_escaped(self):
         self.assertIn("빨간색", mission_state_json("picking", color="red"))
 

@@ -38,9 +38,20 @@ def action_text(state, color=None, status=""):
     return text
 
 
-def mission_state_json(state, status="", color=None, target="", dry_run=False, now=None):
-    """/lekiwi/mission_state 에 실어 보낼 JSON 문자열."""
+def mission_state_json(state, status="", color=None, target="", dry_run=False, now=None,
+                       received=None, command=""):
+    """/lekiwi/mission_state 에 실어 보낼 JSON 문자열.
+
+    received: 노트북 중계기가 **실제로 받은** 토픽 {"topic", "data", "at"} -- 에이보 웹앱이
+              "보낸 토픽"과 나란히 보여줘 수신을 눈으로 확인할 수 있게 한다.
+    command : 그 토픽으로 만든 르키위 명령 ("fetch center color:red").
+    """
+    received = received or {}
     return json.dumps({
+        "received_topic": received.get("topic"),
+        "received_data": received.get("data"),
+        "received_at": received.get("at"),
+        "command": command,
         "state": state,
         "action_text": action_text(state, color, status),
         "status": status,
