@@ -128,3 +128,195 @@ class PickPlaceHeadlessWorker:
                 return None
             time.sleep(0.1)
         return None
+
+    # ── 메인 루프 ──
+    def run(self) -> None:
+        home: dict[str, float] = {}
+        clean_exit = False
+        interval = 1.0 / max(1, self.cfg.fps)
+        try:
+            model = self._load_model(self.cfg.yolo)
+            self.robot.connect()
+
+            obs = self._wait_for_first_frames()
+            if obs is None:
+                self.status.set({"state": "ERROR", "error": f"{self._first_obs_timeout_s:.0f}초 안에 카메라 프레임을 받지 못했습니다."})
+                return
+
+            home = self._latch_pose(obs)
+            if not home:
+                self.status.set({"state": "ERROR", "error": "팔 관절 위치를 읽지 못했습니다."})
+                return
+
+            problem = self._resolve_gripper_close_pct()
+            if problem:
+                self.status.set({"state": "ERROR", "error": problem})
+                return
+
+            pick_pose = self._filter_pose("pre_pick", home) if self.cfg.pick.enabled else None
+            grasp_pose = (
+                self._filter_pose("grasp", home)
+                if (self.cfg.pick.enabled and self.cfg.grasp.enabled)
+                else None
+            )
+
+            ap = Approacher(self.cfg.approach)
+            arm = ArmSequencer(home, pick_pose, self.cfg.pick, self.cfg.grasp, grasp_pose)
+            checker = GraspChecker(self.cfg.check)
+            hold_pose = dict(home)
+            hz = 0.0
+
+            while not self.stop_event.is_set():
+                loop_start = time.perf_counter()
+                obs = self.robot.get_observation() or {}
+                frames_bgr = {
+                    v: cv2.cvtColor(obs[v], cv2.COLOR_RGB2BGR)
+                    for v in self.cfg.views
+                    if isinstance(obs.get(v), np.ndarray)
+                }
+                if self.cfg.approach.view not in frames_bgr:
+                    self.robot.send_action({**hold_pose, **STOP})
+                    self.stop_event.wait(0.05)
+                    continue
+
+                dets_by_view = self._infer(model, self.cfg.yolo, frames_bgr)
+                if (
+                    self.cfg.grasp.enabled
+                    and self.cfg.grasp.view in frames_bgr
+                    and self.cfg.grasp.view != self.cfg.approach.view
+                ):
+                    dets_by_view[self.cfg.grasp.view] = filter_wrist_dets(
+                        dets_by_view.get(self.cfg.grasp.view, []),
+                        frames_bgr[self.cfg.grasp.view].shape,
+                        self.cfg.grasp,
+                    )
+                wrist_frame = frames_bgr.get(self.cfg.grasp.view)
+                paused = self.paused_event.is_set()
+                allow_motion = not paused and not self.cfg.dry_run
+
+                cmd = ap.update(
+                    dets_by_view[self.cfg.approach.view], frames_bgr[self.cfg.approach.view].shape, loop_start
+                )
+                tracking_ok = ap.target is not None and ap.size_ok and ap.center_ok
+
+                descend_hint = False
+                if self.cfg.grasp.front_hint and arm.state == "SERVO" and self.cfg.approach.view in frames_bgr:
+                    ratio = center_purple_ratio(
+                        frames_bgr[self.cfg.approach.view], self.cfg.check, self.cfg.grasp.front_hint_win_px
+                    )
+                    descend_hint = ratio >= self.cfg.grasp.front_hint_min_ratio
+
+                arm_pose = arm.update(
+                    ap.done,
+                    tracking_ok,
+                    allow_motion,
+                    loop_start,
+                    wrist_dets=dets_by_view.get(self.cfg.grasp.view) if wrist_frame is not None else None,
+                    wrist_shape=wrist_frame.shape if wrist_frame is not None else None,
+                    dt=interval,
+                    descend_hint=descend_hint,
+                )
+
+                if self.cfg.check.enabled and arm.grasp_enabled and arm.state == "GRASPED":
+                    if checker.state == "IDLE":
+                        checker.start(loop_start)
+                    checker.update(frames_bgr, dets_by_view, loop_start)
+                check_label = {"CHECKING": "GRASP_CHECK", "SUCCESS": "GRASP_OK", "FAIL": "GRASP_FAIL"}.get(
+                    checker.state
+                )
+
+                if paused:
+                    state_label, sent = "PAUSED", dict(STOP)
+                elif self.cfg.dry_run:
+                    state_label, sent = "DRY_RUN", dict(STOP)
+                elif arm.base_locked:
+                    state_label, sent = (check_label or arm.label or ap.state), dict(STOP)
+                else:
+                    state_label, sent = ap.state, cmd
+
+                if checker.just_decided:
+                    if checker.state == "FAIL" and allow_motion and arm.can_retry:
+                        arm.retry(loop_start)
+                        checker.reset()
+                    elif checker.state == "FAIL" and allow_motion and arm.can_restart_pick:
+                        arm.restart_pick(loop_start)
+                        checker.reset()
+                    elif checker.state == "FAIL":
+                        arm.give_up()
+                if (
+                    checker.state == "SUCCESS"
+                    and arm.state == "GRASPED"
+                    and self.cfg.grasp.return_home_when_grasped
+                    and allow_motion
+                ):
+                    arm.carry_home(loop_start)
+                if arm.state not in ("GRASPED", "CARRY_HOME", "DONE") and checker.state != "IDLE":
+                    checker.reset()
+
+                hold_pose = dict(arm_pose)
+                self.robot.send_action({**arm_pose, **sent})
+
+                for v in self.cfg.views:
+                    if v not in frames_bgr:
+                        continue
+                    img = draw(frames_bgr[v], v, dets_by_view.get(v, []), hz, crosshair=v in self.cfg.crosshair_views)
+                    if v == self.cfg.approach.view:
+                        img = draw_alignment(img, ap, cmd, state_label)
+                    if v == self.cfg.grasp.view and arm.grasp_enabled:
+                        img = draw_wrist_servo(img, arm, state_label)
+                    if self.cfg.check.enabled and v in (self.cfg.check.front_view, self.cfg.check.wrist_view):
+                        img = draw_grasp_check(img, checker, v)
+                    ok, buf = cv2.imencode(".jpg", img)
+                    if ok:
+                        self.frames.set(v, buf.tobytes())
+
+                self.status.set(
+                    {
+                        "state": state_label,
+                        "pick_attempts": arm.pick_attempts,
+                        "max_pick_attempts": self.cfg.grasp.max_pick_attempts,
+                        "retries": arm.retries,
+                        "max_retries": self.cfg.grasp.max_retries,
+                        "gave_up": arm.gave_up,
+                        "arm_done": arm.done,
+                        "dry_run": self.cfg.dry_run,
+                        "paused": paused,
+                        "hz": round(hz, 1),
+                    }
+                )
+
+                dt = time.perf_counter() - loop_start
+                if interval - dt > 0:
+                    self.stop_event.wait(interval - dt)
+                hz = 1.0 / max(time.perf_counter() - loop_start, 1e-6)
+
+            clean_exit = True
+        except Exception as exc:
+            logging.exception("PickPlaceHeadlessWorker 오류")
+            self.status.set({"state": "ERROR", "error": str(exc)})
+        finally:
+            self._shutdown(home, clean_exit)
+
+    def _shutdown(self, home: dict[str, float], clean_exit: bool) -> None:
+        try:
+            if not self.robot.is_connected:
+                return
+            if clean_exit and not self.abort_event.is_set() and home:
+                current = self._latch_pose(self.robot.get_observation() or {})
+                rollout = RollOutPlayer(current, home, self._rollout_time_s)
+                while not rollout.done:
+                    now = time.perf_counter()
+                    pose = rollout.update(now)
+                    self.robot.send_action({**pose, **STOP})
+                    time.sleep(1.0 / max(1, self.cfg.fps))
+            else:
+                hold = self._latch_pose(self.robot.get_observation() or {})
+                self.robot.send_action({**hold, **STOP})
+            time.sleep(0.2)
+        except Exception:
+            logging.exception("정지 시퀀스 중 오류")
+        finally:
+            try:
+                self.robot.disconnect()
+            except Exception:
+                logging.exception("연결 해제 실패")
