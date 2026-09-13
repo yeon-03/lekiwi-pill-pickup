@@ -86,6 +86,10 @@ export LEKIWI_WHEEL_BLIND="179.5:38.5,61.0:35.5,-59.3:34.0"
 
 # --- 장치 -----------------------------------------------------------------
 export LEKIWI_LIDAR_PORT="/dev/ttyUSB0"
+
+# [미검증] 라이다 반사 강도 필터 (0 = 끔). 벽 재질에 따라 적정값이 크게 다르다.
+# /scan 유효 빔이 30% 미만이면 0 으로 낮출 것 (lekiwi01 은 25 에서 10% 였다).
+export LEKIWI_MIN_INTENSITY="25"
 export LEKIWI_SERVO_PORT="/dev/ttyACM0"
 export LEKIWI_URDF="$HOME/lekiwi.urdf"
 export LEKIWI_CARTO_LUA="lekiwi_cartographer.lua"

@@ -69,7 +69,9 @@ DEFAULTS = {
     "lidar_yaw":   _P.get("LEKIWI_LIDAR_YAW",   FALLBACK["lidar_yaw"]),
     "wheel_blind": _P.get("LEKIWI_WHEEL_BLIND", FALLBACK["wheel_blind"]),
     "wheel_sign":  _P.get("LEKIWI_WHEEL_SIGN",  FALLBACK["wheel_sign"]),
-    "min_intensity": FALLBACK["min_intensity"],
+    # 반사 강도 필터. 벽 재질에 따라 적정값이 크게 달라 기체·장소마다 다르다
+    # (lekiwi06 은 25 가 맞았고, lekiwi01 학교 방은 25 에서 유효 빔 10% 로 떨어졌다).
+    "min_intensity": _P.get("LEKIWI_MIN_INTENSITY", FALLBACK["min_intensity"]),
     "wheel_margin":  FALLBACK["wheel_margin"],
     # 파일명에 기체 번호를 넣지 않으므로 고정 이름이다. 프로파일이 다른
     # 경로를 지정했다면 그쪽을 쓴다.
