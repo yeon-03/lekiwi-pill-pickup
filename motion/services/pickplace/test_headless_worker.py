@@ -251,6 +251,46 @@ def test_go_home_targets_saved_pre_pick_not_connect_time_pose():
     assert robot.connected is False  # 마지막엔 stop_event 로 정상 종료돼 연결 해제됨
 
 
+def test_go_home_prefers_saved_home_over_pre_pick():
+    """2026-09-13: pre_pick(약통 찾기 직전 자세)과 home(단정한 시작 자세)은 서로 다른
+    자세다 — 둘 다 저장돼 있으면 [처음 자세로] 는 home 을 우선해야 한다."""
+    robot = FakeRobot()
+    saved_pre_pick = {
+        "arm_shoulder_pan.pos": 5.98,
+        "arm_shoulder_lift.pos": 58.95,
+        "arm_elbow_flex.pos": -54.99,
+        "arm_wrist_flex.pos": 47.25,
+        "arm_wrist_roll.pos": -16.13,
+        GRIPPER_JOINT: 1.36,
+    }
+    saved_home = {
+        "arm_shoulder_pan.pos": -2.73,
+        "arm_shoulder_lift.pos": 1.58,
+        "arm_elbow_flex.pos": -0.22,
+        "arm_wrist_flex.pos": 78.51,
+        "arm_wrist_roll.pos": -0.92,
+        GRIPPER_JOINT: 4.65,
+    }
+    w = _worker(robot, poses={"pre_pick": saved_pre_pick, "home": saved_home})
+    w.resume()
+
+    rollout_calls = []
+    w._run_rollout = lambda current, home: rollout_calls.append((dict(current), dict(home)))
+
+    def on_obs():
+        if robot._obs_calls == 3:
+            w.go_home()
+        if robot._obs_calls >= 6:
+            w.stop_event.set()
+
+    robot.on_observation = on_obs
+    w.run()
+
+    _current, target_home = rollout_calls[0]
+    assert target_home["arm_shoulder_lift.pos"] == 1.58
+    assert target_home["arm_wrist_flex.pos"] == 78.51
+
+
 def _worker_and_stuck_arm(*, max_pick_attempts=3, servo_give_up_s=1.0, pick_attempts=1):
     """SERVO 상태에서 손목캠을 오래 놓친(LOST) 상황을 그대로 재현한다 (전체 파이프라인을
     카메라/검출로 몰지 않고, 상태만 직접 강제해서 _recover_lost_servo() 만 초점 테스트).

@@ -62,6 +62,10 @@ class RunConfig:
     host: str = "0.0.0.0"
     port: int = 8000
     rollout_time_s: float = 2.0
+    # 단정한 시작 자세(pre_pick 과는 다름 — pre_pick 은 "약통 찾기 직전 자세"). [🏠 처음
+    # 자세로] 버튼이 이 파일이 있으면 우선 이걸 목표로 삼는다(headless_worker.go_home 참고).
+    # 없는 로봇/설치에서도 에러 없이 그냥 생략되도록 존재 여부는 _load_poses 에서 확인한다.
+    home_pose_file: str = str(_DEFAULT_POSES_DIR / "home.json")
 
     def to_pickplace_config(self) -> PickPlaceConfig:
         return PickPlaceConfig(
@@ -88,9 +92,13 @@ def _load_poses(cfg: RunConfig) -> dict[str, dict[str, float]]:
         "pre_pick": cfg.pick.pose_file or str(_DEFAULT_POSES_DIR / "pre_pick.json"),
         "grasp": cfg.grasp.grasp_pose_file or str(_DEFAULT_POSES_DIR / "grasp.json"),
         "grasp_closed": cfg.grasp.close_pose_file or str(_DEFAULT_POSES_DIR / "grasp_closed.json"),
+        # home 은 선택 사항 — 없는 설치에서도 조용히 생략된다(아래에서 존재 여부 확인).
+        "home": cfg.home_pose_file or str(_DEFAULT_POSES_DIR / "home.json"),
     }
     poses: dict[str, dict[str, float]] = {}
     for name, path in defaults.items():
+        if name == "home" and not Path(path).expanduser().exists():
+            continue
         if path:
             poses[name] = load_pose(Path(path).expanduser())
     return poses
