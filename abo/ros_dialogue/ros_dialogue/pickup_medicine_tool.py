@@ -2,8 +2,8 @@
 
 lekiwi_tool.py와 동일 패턴 -- 여기 선언된 함수는 실행되지 않고(dialogue_node가
 tool_call 이름으로 가로채 직접 처리), LLM이 자연어에서 색상을 판단하는 용도로만
-쓰인다. 실제 실행(SSH 트리거)은 lekiwi_command_node가 /lekiwi_command 토픽을
-구독해 처리한다(SKILL_MAP의 pick_red/pick_blue/pick_green 참고).
+쓰인다. dialogue_node는 판단된 색상을 pickup/medicine/<색> 토픽(data=색상)으로
+발행하고, 노트북의 lekiwi-pill-pickup nav/mission/medicine_relay.py가 LeKiwi로 넘긴다.
 """
 from typing import Literal
 

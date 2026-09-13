@@ -535,6 +535,13 @@ class DialogueNode(Node):
         # (look_at_object/teach_object_category가 face_id_node/object_classify_node에
         # 실행을 위임하는 것과 동일한 패턴).
         self.lekiwi_command_publisher = self.create_publisher(String, '/lekiwi_command', 10)
+        # pickup_medicine 도구가 판단한 색상을 알리는 토픽(색상별, data=색상 문자열).
+        # 같은 노트북(도메인 77)의 lekiwi-pill-pickup nav/mission/medicine_relay.py가
+        # 받아 LeKiwi(도메인 42)로 넘긴다.
+        self.pickup_medicine_publishers = {
+            color: self.create_publisher(String, f'pickup/medicine/{color}', 10)
+            for color in ('red', 'blue', 'green')
+        }
         # companion_bridge_node이 파이에서 돌 때(2026-08-06) ~/.roboseasy_faces/profiles/를
         # 직접 못 읽어서 대신 물어보는 토픽 — 얼굴 임베딩(chromadb) 삭제는 기존
         # /face_delete_request<->/face_delete_result 왕복을 그대로 쓰고, 이 쪽은 프로필
@@ -2175,10 +2182,9 @@ class DialogueNode(Node):
                                     f'말하지 말고, "이동할게요"/"이동 중이에요"처럼 지금 '
                                     f'시작하거나 진행 중이라는 시제로 말하세요.')
                     elif call['name'] == PICKUP_MEDICINE_TOOL_NAME:
-                        # 실제 왕복(이동->픽->복귀)은 lekiwi01의 abo_nav_bridge.py가
-                        # 처리한다 -- 여기서는 SSH 트리거만 보낸다(run_lekiwi_skill과
-                        # 동일 채널/노드, lekiwi_control.py의 SKILL_MAP
-                        # pick_red/pick_blue/pick_green 참고). color는 Literal
+                        # 여기서는 pickup/medicine/<색> 토픽만 발행한다 -- 노트북의
+                        # medicine_relay.py가 LeKiwi로 넘기고, 실제 왕복(이동->픽->복귀)은
+                        # LeKiwi의 abo_nav_bridge.py가 처리한다. color는 Literal
                         # 타입으로 선언돼 있지만 방어적으로 한 번 더 검증한다.
                         color = call['args'].get('color')
                         if color not in ('red', 'blue', 'green'):
@@ -2186,8 +2192,8 @@ class DialogueNode(Node):
                             tool_result = ('지원하지 않는 색상입니다. 빨강/파랑/초록 중에서만 '
                                            '약통을 가져올 수 있다고 안내하고, 어떤 색인지 되물으세요.')
                         else:
-                            self.lekiwi_command_publisher.publish(String(data=f'pick_{color}'))
-                            self.get_logger().info(f'약통 픽업 트리거: pick_{color}')
+                            self.pickup_medicine_publishers[color].publish(String(data=color))
+                            self.get_logger().info(f'약통 픽업 색상 발행: pickup/medicine/{color}')
                             # LeKiwiClient 연결 오버헤드(약 9초, lekiwi-pill-pickup
                             # 설계 문서 참고)까지 감안하면 도착/픽업까지 시간이
                             # 걸린다 -- 아직 결과를 모르니 완료됐다고 말하지

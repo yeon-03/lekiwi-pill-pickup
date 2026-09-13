@@ -11,13 +11,10 @@
 | 파일 | 구분 | 내용 |
 |---|---|---|
 | `ros_dialogue/pickup_medicine_tool.py` | 신규 | LLM 도구, `color: Literal['red','blue','green']` |
-| `ros_dialogue/dialogue_node.py` | 수정 | 도구 호출을 가로채 `/lekiwi_command` 에 `pick_<color>` 발행 |
-| `ros_dialogue/lekiwi_control.py` | 수정 | `SKILL_MAP` 에 `pick_red/blue/green` (SSH 로 `~/pick_trigger.sh <color>`) |
-| `ros_dialogue/lekiwi_command_node.py` | 사용(변경 없음) | `/lekiwi_command` 구독 → SSH 실행 |
-| `test/test_lekiwi_control.py` | 수정 | 새 스킬 테스트 |
+| `ros_dialogue/dialogue_node.py` | 수정 | 도구 호출을 가로채 `pickup/medicine/<color>` 에 `data=<color>` 발행 |
 
-흐름: 발화 → `dialogue_node` → `/lekiwi_command "pick_red"` (도메인 77) →
-`lekiwi_command_node` SSH → lekiwi01 `~/pick_trigger.sh red` (`nav/shell/pick_trigger.sh`)
-→ `/abo/command "fetch center color:red"` (도메인 42) → `nav/mission/abo_nav_bridge.py`.
+흐름: 발화 → `dialogue_node` → `pickup/medicine/red` (도메인 77, 노트북) →
+`nav/mission/medicine_relay.py` → `/abo/command "fetch center color:red"` (도메인 42) →
+`nav/mission/abo_nav_bridge.py`. 시험 방법은 `docs/nav/abo-color-topic-test.md`.
 
 원본을 고치면 이 사본도 같이 갱신할 것.

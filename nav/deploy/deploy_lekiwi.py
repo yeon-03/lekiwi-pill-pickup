@@ -41,6 +41,7 @@ SHARED = [
     "shell/run_amcl.sh", "shell/run_nav2.sh", "shell/pick_trigger.sh", "shell/start_pick_host.sh",
     "shell/start_all.sh", "shell/stop_all.sh", "shell/start_nav.sh",
     "shell/stop_nav2.sh", "shell/start_cartographer.sh", "shell/stop_cartographer.sh",
+    "shell/ros_peers.sh",
     # 설정 / 설치
     "config/nav2_lekiwi.yaml",
     "install/install_ros2_jazzy.sh", "install/install_docker.sh",
