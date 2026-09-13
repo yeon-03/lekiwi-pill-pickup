@@ -1,10 +1,12 @@
 import numpy as np
 import pytest
 
+from services.pickplace.approach import ApproachArgs
 from services.pickplace.arm_sequencer import ArmSequencer, PickArgs
 from services.pickplace.config import PickPlaceConfig
 from services.pickplace.headless_worker import PickPlaceHeadlessWorker
 from services.pickplace.wrist_servo import GRIPPER_JOINT, GraspArgs, WristServo
+from services.pickplace.yolo_detect import Detection
 
 
 class FakeRobot:
@@ -348,3 +350,52 @@ def test_recover_lost_servo_does_nothing_when_paused():
 
     assert arm.state == "SERVO"
     assert not arm.gave_up
+
+
+def test_get_set_target_class_round_trip():
+    w = _worker(FakeRobot())
+    assert w.get_target_class() is None
+    w.set_target_class("red_pill_bottle")
+    assert w.get_target_class() == "red_pill_bottle"
+    w.set_target_class(None)
+    assert w.get_target_class() is None
+
+
+def test_target_class_filter_picks_only_matching_color():
+    """색 지정 없이는 더 큰 박스(빨강, 오른쪽)를 타겟으로 잡지만, target_class 를
+    초록으로 지정하면 빨강은 후보에서 아예 빠지고 초록(왼쪽) 쪽으로 회전한다
+    (2026-09-13: 색 지정 없이는 둘 다 유효한 타겟이라 매 프레임 더 큰 쪽으로 흔들리며
+    왔다갔다하던 문제 — 색을 지정하면 다른 색은 애초에 후보에서 빠진다)."""
+    green = Detection(name="green_pill_bottle", conf=0.9, xyxy=(4, 40, 24, 60), cls=0)  # 폭 20, 왼쪽(cx=14)
+    red = Detection(name="red_pill_bottle", conf=0.9, xyxy=(40, 40, 62, 60), cls=1)  # 폭 22, 오른쪽(cx=51) — 더 큼
+
+    def infer(model, cfg, frames_bgr):
+        return {v: ([green, red] if v == "front" else []) for v in frames_bgr}
+
+    robot = FakeRobot()
+    cfg = PickPlaceConfig(
+        pick=PickArgs(enabled=False),
+        # backward_when_clipped 는 이 테스트의 작은 가짜 프레임에서 박스가 바닥에
+        # 닿은 것처럼 보여 "잘렸다"고 오판, 후진만 하고 회전을 안 하게 만들어서 끈다
+        # — 여기서 보려는 건 타겟 선택/회전 방향이지 바닥 클리핑 로직이 아니다.
+        approach=ApproachArgs(center_tolerance_px=5, backward_when_clipped=False),
+    )
+    w = PickPlaceHeadlessWorker(
+        robot, cfg, {}, infer_fn=infer, load_model_fn=_fake_load_model, first_obs_timeout_s=0.5,
+    )
+    w.set_target_class("green_pill_bottle")
+    w.paused_event.clear()  # 실제로 접근 명령이 나오는 걸 봐야 하므로 일시정지 해제
+
+    def stop_after_two():
+        if robot._obs_calls >= 2:
+            w.stop_event.set()
+
+    robot.on_observation = stop_after_two
+    w.run()
+
+    thetas = [a["theta.vel"] for a in robot.sent_actions if a["theta.vel"] != 0.0]
+    assert thetas, "회전 명령이 하나도 안 나왔음"
+    # green center_error = 14-32 = -18(화면 왼쪽) → +theta(좌회전). 필터 없이 더 큰
+    # red(center_error=+19)가 골라졌다면 부호가 반대(-theta)로 나왔을 것이다.
+    assert all(t > 0 for t in thetas)
+    assert w.status.get()["target_class"] == "green_pill_bottle"

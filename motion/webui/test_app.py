@@ -14,6 +14,7 @@ class FakeWorker:
         self.aborted = False
         self.restarted = False
         self.went_home = False
+        self.target_class = None
 
     def resume(self):
         self.resumed = True
@@ -32,6 +33,9 @@ class FakeWorker:
 
     def go_home(self):
         self.went_home = True
+
+    def set_target_class(self, name):
+        self.target_class = name
 
 
 def test_index_serves_static_page():
@@ -90,6 +94,25 @@ def test_home_requests_go_home():
     resp = client.post("/home")
     assert resp.status_code == 200
     assert worker.went_home is True
+
+
+def test_target_sets_worker_target_class():
+    worker = FakeWorker()
+    client = TestClient(create_app(worker))
+    resp = client.post("/target/red_pill_bottle")
+    assert resp.status_code == 200
+    assert worker.target_class == "red_pill_bottle"
+    assert resp.json() == {"ok": True, "target_class": "red_pill_bottle"}
+
+
+def test_target_none_clears_worker_target_class():
+    worker = FakeWorker()
+    worker.target_class = "green_pill_bottle"
+    client = TestClient(create_app(worker))
+    resp = client.post("/target/none")
+    assert resp.status_code == 200
+    assert worker.target_class is None
+    assert resp.json() == {"ok": True, "target_class": None}
 
 
 def test_status_returns_worker_status():

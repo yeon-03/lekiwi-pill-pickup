@@ -15,6 +15,12 @@
   #home { background: #9b59b6; color: #fff; }
   #stop { background: #7f8c8d; color: #fff; }
   #estop { background: #e74c3c; color: #fff; font-weight: bold; font-size: 22px; padding: 14px 24px; }
+  .targets { margin-top: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .targets button { opacity: 0.55; border: 3px solid transparent; }
+  .targets button.active { opacity: 1; border-color: #fff; }
+  #target-red { background: #e74c3c; color: #fff; }
+  #target-green { background: #2ecc71; color: #000; }
+  #target-none { background: #34495e; color: #fff; }
   #status { margin-top: 16px; font-family: monospace; white-space: pre-wrap; background: #222; padding: 10px; border-radius: 4px; }
 </style>
 </head>
@@ -32,6 +38,12 @@
     <button id="stop">■ 정지 (연결 종료)</button>
     <button id="estop">⚠ 비상정지</button>
   </div>
+  <div class="targets">
+    <span>타겟 색:</span>
+    <button id="target-red">🔴 빨강만</button>
+    <button id="target-green">🟢 초록만</button>
+    <button id="target-none">둘 다</button>
+  </div>
   <pre id="status">연결 중...</pre>
 
 <script>
@@ -44,12 +56,24 @@
   document.getElementById("home").onclick = () => post("/home");
   document.getElementById("stop").onclick = () => post("/stop");
   document.getElementById("estop").onclick = () => post("/estop");
+  document.getElementById("target-red").onclick = () => post("/target/red_pill_bottle");
+  document.getElementById("target-green").onclick = () => post("/target/green_pill_bottle");
+  document.getElementById("target-none").onclick = () => post("/target/none");
+
+  function updateTargetButtons(targetClass) {
+    const map = { red_pill_bottle: "target-red", green_pill_bottle: "target-green" };
+    const activeId = map[targetClass] || "target-none";
+    for (const id of ["target-red", "target-green", "target-none"]) {
+      document.getElementById(id).classList.toggle("active", id === activeId);
+    }
+  }
 
   async function pollStatus() {
     try {
       const resp = await fetch("/status");
       const data = await resp.json();
       document.getElementById("status").textContent = JSON.stringify(data, null, 2);
+      updateTargetButtons(data.target_class);
     } catch (e) {
       document.getElementById("status").textContent = "상태 조회 실패: " + e;
     }

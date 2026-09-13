@@ -70,7 +70,24 @@ class PickPlaceHeadlessWorker:
         self.restart_event = threading.Event()
         self.home_event = threading.Event()
 
+        # 실행 중 라이브로 바꿀 수 있는 타겟 클래스 필터 (예: "red_pill_bottle") —
+        # None 이면 필터 없이 검출된 모든 클래스가 후보다. 웹 UI 버튼이나(나중에)
+        # 외부 에이전트가 set_target_class() 로 세션 재시작 없이 바꾼다
+        # (2026-09-13: 색 지정 없이는 초록/빨강 둘 다 유효한 타겟이라 매 프레임 더 큰
+        # 쪽으로 흔들리며 왔다갔다하던 문제 — 색을 지정하면 애초에 다른 색은 후보에서
+        # 빠지므로 해결된다).
+        self._target_lock = threading.Lock()
+        self._target_class: str | None = None
+
         self._thread: threading.Thread | None = None
+
+    def set_target_class(self, name: str | None) -> None:
+        with self._target_lock:
+            self._target_class = name
+
+    def get_target_class(self) -> str | None:
+        with self._target_lock:
+            return self._target_class
 
     # ── 공개 제어 ──
     def start_background(self) -> None:
@@ -255,6 +272,11 @@ class PickPlaceHeadlessWorker:
                     continue
 
                 dets_by_view = self._infer(model, self.cfg.yolo, frames_bgr)
+                target_class = self.get_target_class()
+                if target_class:
+                    dets_by_view = {
+                        v: [d for d in dets if d.name == target_class] for v, dets in dets_by_view.items()
+                    }
                 if (
                     self.cfg.grasp.enabled
                     and self.cfg.grasp.view in frames_bgr
@@ -359,6 +381,7 @@ class PickPlaceHeadlessWorker:
                         "dry_run": self.cfg.dry_run,
                         "paused": paused,
                         "hz": round(hz, 1),
+                        "target_class": target_class,
                     }
                 )
 

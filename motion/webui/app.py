@@ -68,6 +68,15 @@ def create_app(worker: Any) -> FastAPI:
         worker.go_home()
         return {"ok": True}
 
+    @app.post("/target/{name}")
+    def set_target(name: str) -> dict[str, Any]:
+        # 재시작 없이 실행 중에 타겟 클래스를 바꾼다 — 지금은 웹 버튼이 부르지만,
+        # 나중에 외부 에이전트가 같은 엔드포인트를 그대로 호출하면 된다.
+        # "none" 이면 필터를 없애서 원래대로 아무 클래스나 후보로 돌아간다.
+        cls = None if name == "none" else name
+        worker.set_target_class(cls)
+        return {"ok": True, "target_class": cls}
+
     @app.get("/status")
     def status() -> dict[str, Any]:
         return worker.status.get()
