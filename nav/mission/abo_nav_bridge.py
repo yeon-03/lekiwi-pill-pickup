@@ -15,6 +15,12 @@ abo 쪽은 문자열 토픽 하나만 알면 된다. 좌표도 Nav2 액션도 �
           "fetch center"         -> 왕복 미션: 이동 -> pick -> **출발 자리로** 복귀
           "fetch center to home" -> 복귀 지점을 웨이포인트로 지정
           "fetch center to start"-> 명시적으로 출발 자리 (기본값)
+          "fetch center color:red" -> 약통 색상을 함께 실어 보낸다(선택, 순서 무관 —
+                                     "to"/"color:" 토큰을 먼저 걷어내고 남는 게 목적지
+                                     이름). 에이보(도메인 77)는 두 길로 보낼 수 있다:
+                                     SSH 로 nav/shell/pick_trigger.sh 를 부르거나,
+                                     노트북 중계기가 두 도메인에 동시에 붙어 ROS2 로
+                                     넘겨준다(2026-09-12 실측 왕복 10 ms).
 
   출력  /abo/status    std_msgs/String   사람이 읽는 한 줄
         /abo/state     std_msgs/String   기계가 읽는 값:
@@ -22,15 +28,19 @@ abo 쪽은 문자열 토픽 하나만 알면 된다. 좌표도 Nav2 액션도 �
                                          done|failed|rejected|canceled
 
   pick 인계 (담당자가 다른 사람이라 여기서는 신호만 주고받는다)
-        /abo/pick_request  std_msgs/String  ->  목적지 이름. 도착 직후 발행
+        /abo/pick_request  std_msgs/String  ->  "목적지" 또는 색상이 있으면
+                                                "목적지:색상"(예: "center:red").
+                                                도착 직후 발행
         /abo/pick_done     std_msgs/Bool    <-  true 성공 / false 실패
                                                 이걸 받아야 복귀를 시작한다
 
 상태 문자열은 abo 가 그대로 말하게 해도 되도록 한국어로 쓴다.
 """
-import math, os, sys, time, threading, subprocess, shlex
+import math, os, sys, time, threading, subprocess, shlex, signal, socket
 import yaml
 import rclpy
+
+from color_intent import COLORS, extract_color_token  # 같은 디렉터리에 배포됨
 from rclpy.node import Node
 from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
@@ -42,6 +52,19 @@ from std_srvs.srv import SetBool
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PREFIXES = ("go to", "goto", "go", "가자", "이동", "가줘", "가", "move to", "move")
+
+
+HOST_OBS_PORT = 5556        # lekiwi_host 관측 포트. bind 는 robot.connect() 가 끝난 뒤다
+HOST_READY_TIMEOUT = 30.0   # LeKiwiClient 연결 실측 8~9초 + 카메라 초기화 여유
+
+
+def _port_open(port, host="127.0.0.1", timeout=0.5):
+    """TCP 로 붙어지면 True. ZMTP 인사를 안 하므로 ZMQ 파이프로 등록되지 않는다."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 class AboNav(Node):
@@ -141,10 +164,14 @@ class AboNav(Node):
             # 사람이 로봇을 놓는 자리는 매번 조금씩 다른데, home(0,0) 으로
             # 돌아가면 그 차이만큼 어긋난 곳에 선다(실측 9.2 cm).
             ret = "start"
+            rest, color = extract_color_token(rest)
+            if color and color not in COLORS:
+                return self.say(f"'{color}' 색은 지원하지 않아요. 지원 색상: "
+                                + ", ".join(COLORS), "rejected")
             if len(rest) >= 3 and rest[-2].lower() in ("to", "->", "로"):
                 ret = rest[-1]; rest = rest[:-2]
             name = " ".join(rest).strip()
-            return self.start_mission(name, ret)
+            return self.start_mission(name, ret, color)
 
         tok = raw.split()
         if tok and tok[0].lower() == "goto":
@@ -188,19 +215,41 @@ class AboNav(Node):
             return True                # 호스트는 외부에서 관리
         if self.host_proc and self.host_proc.poll() is None:
             return True
+        log = open(os.path.expanduser("~/pick_host.log"), "ab")
         self.host_proc = subprocess.Popen(shlex.split(self.host_cmd),
-                                          stdout=subprocess.DEVNULL,
-                                          stderr=subprocess.DEVNULL)
-        self.get_logger().info(f"ZMQ 호스트 기동 (pid {self.host_proc.pid})")
-        time.sleep(3.0)                # 포트 잡을 시간
-        return self.host_proc.poll() is None
+                                          stdout=log, stderr=subprocess.STDOUT)
+        log.close()                    # 자식이 fd 를 물려받았다
+        self.get_logger().info(f"ZMQ 호스트 기동 (pid {self.host_proc.pid}), 준비 대기")
+        # 고정 시간 대신 관측 포트가 열릴 때까지 기다린다. lekiwi_host 는
+        # robot.connect()(서보 버스·카메라)를 끝낸 **뒤에** 소켓을 bind 하므로,
+        # 포트가 열렸다는 건 버스를 잡았다는 뜻이다.
+        t0 = time.time()
+        while time.time() - t0 < HOST_READY_TIMEOUT:
+            if self.host_proc.poll() is not None:
+                self.get_logger().error(
+                    f"ZMQ 호스트가 바로 끝났다 (code {self.host_proc.returncode}). "
+                    "~/pick_host.log 확인")
+                self.host_proc = None
+                return False
+            if _port_open(HOST_OBS_PORT):
+                self.get_logger().info(f"ZMQ 호스트 준비 ({time.time() - t0:.1f}초)")
+                return True
+            time.sleep(0.3)
+        self.get_logger().error(f"ZMQ 호스트가 {HOST_READY_TIMEOUT:.0f}초 안에 준비되지 않았다")
+        self.host_stop()
+        return False
 
     def host_stop(self):
         if not self.host_proc:
             return
-        self.host_proc.terminate()
+        # SIGINT 로 끈다. lekiwi_host 는 KeyboardInterrupt 만 잡아 finally 에서
+        # 카메라·버스를 정리한다(SIGTERM 은 정리 없이 죽는다). 그 정리가 토크를
+        # 끄지 않는 건 start_pick_host.sh 의 disable_torque_on_disconnect=false 덕분이다
+        # -- host_cmd 를 바꿔 이 옵션을 빼면 여기서 팔 토크가 풀린다.
+        self.host_proc.send_signal(signal.SIGINT)
         try: self.host_proc.wait(timeout=8)
-        except subprocess.TimeoutExpired: self.host_proc.kill()
+        except subprocess.TimeoutExpired:
+            self.host_proc.kill(); self.host_proc.wait(timeout=3)
         self.get_logger().info("ZMQ 호스트 종료")
         self.host_proc = None
         time.sleep(1.5)                # 포트가 풀릴 시간
@@ -248,7 +297,7 @@ class AboNav(Node):
             self.get_logger().warn(f"재정합 실패({e}). 건너뛰고 진행한다.")
 
     # ---------- 왕복 미션 ----------
-    def start_mission(self, name, return_to):
+    def start_mission(self, name, return_to, color=None):
         self._load()
         pt = self.wp.get(name) or self.wp.get(name.lower())
         if pt is None:
@@ -275,19 +324,25 @@ class AboNav(Node):
             rt_label = return_to
 
         self.mission = {"target": name, "return_to": rt_label,
-                        "return_pt": rt_pt, "phase": "going"}
+                        "return_pt": rt_pt, "phase": "going", "color": color}
         self.say(f"{name} 에 가서 물건을 가져올게요.", "moving")
         self.go(pt["x"], pt["y"], math.radians(pt.get("yaw", 0.0)), name)
 
     def begin_pick(self):
         self.mission["phase"] = "picking"
         # 서보 버스를 ZMQ 쪽에 넘긴다. 이 시점부터 오도메트리는 멈춘다.
-        self.set_bus(False)
+        # 넘기지 못했는데 호스트를 띄우면 두 프로그램이 한 반이중 버스를 동시에
+        # 쥐게 된다(명령이 섞여 둘 다 깨진다) -- 그래서 여기서 멈춘다.
+        if not self.set_bus(False):
+            self.mission = None
+            return self.say("바퀴 제어를 넘기지 못해 집기를 시작하지 않았어요.", "failed")
         if not self.host_start():
             self.mission = None
             self.set_bus(True)
             return self.say("팔 제어를 시작하지 못했어요.", "failed")
-        self.pub_pick.publish(String(data=self.mission["target"]))
+        color = self.mission.get("color")
+        payload = f'{self.mission["target"]}:{color}' if color else self.mission["target"]
+        self.pub_pick.publish(String(data=payload))
         self.pick_deadline = time.time() + self.pick_timeout
         self.say("도착했어요. 물건을 집는 중이에요.", "picking")
 

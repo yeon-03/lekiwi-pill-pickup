@@ -24,11 +24,13 @@ SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SHARED = [
     # 센서/구동 노드
     "nodes/ydlidar_node.py", "nodes/bmi160_node.py", "nodes/lekiwi_base_node.py",
+    "nodes/arm_hold.py",
     # 위치추정 / 미션
     "mission/refine_pose.py", "mission/set_pose.py", "mission/relocalize.sh",
     "mission/keep_particles.py", "mission/find_pose.py", "mission/align_helper.py",
     "mission/send_goal.py", "mission/abo_nav_bridge.py", "mission/run_abo.sh",
     "mission/waypoints.yaml",
+    "mission/color_intent.py",
     # 시험 / 진단
     "tools/check_config.py", "tools/odom_test.py", "tools/lidar_test.py",
     "tools/deadbeam.py", "tools/procchk.py", "tools/tf_chain.py",
@@ -36,7 +38,7 @@ SHARED = [
     # 셸 (런치로 대체됐지만 텔레옵 등 일부는 여전히 필요)
     "shell/run_base.sh", "shell/run_imu.sh", "shell/run_lidar.sh",
     "shell/run_lidar_front60.sh", "shell/run_rsp.sh", "shell/run_teleop.sh",
-    "shell/run_amcl.sh", "shell/run_nav2.sh",
+    "shell/run_amcl.sh", "shell/run_nav2.sh", "shell/pick_trigger.sh", "shell/start_pick_host.sh",
     "shell/start_all.sh", "shell/stop_all.sh", "shell/start_nav.sh",
     "shell/stop_nav2.sh", "shell/start_cartographer.sh", "shell/stop_cartographer.sh",
     # 설정 / 설치
@@ -86,6 +88,10 @@ export LEKIWI_WHEEL_BLIND="179.5:38.5,61.0:35.5,-59.3:34.0"
 
 # --- 장치 -----------------------------------------------------------------
 export LEKIWI_LIDAR_PORT="/dev/ttyUSB0"
+
+# [미검증] 라이다 반사 강도 필터 (0 = 끔). 벽 재질에 따라 적정값이 크게 다르다.
+# /scan 유효 빔이 30% 미만이면 0 으로 낮출 것 (lekiwi01 은 25 에서 10% 였다).
+export LEKIWI_MIN_INTENSITY="25"
 export LEKIWI_SERVO_PORT="/dev/ttyACM0"
 export LEKIWI_URDF="$HOME/lekiwi.urdf"
 export LEKIWI_CARTO_LUA="lekiwi_cartographer.lua"
