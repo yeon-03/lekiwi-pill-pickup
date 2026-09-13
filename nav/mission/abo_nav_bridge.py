@@ -238,18 +238,23 @@ class AboNav(Node):
         if self.host_proc and self.host_proc.poll() is None:
             return True
         log = open(os.path.expanduser("~/pick_host.log"), "ab")
-        self.host_proc = subprocess.Popen(shlex.split(self.host_cmd),
-                                          stdout=log, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(shlex.split(self.host_cmd), stdout=log, stderr=subprocess.STDOUT)
+        self.host_proc = proc
         log.close()                    # 자식이 fd 를 물려받았다
-        self.get_logger().info(f"ZMQ 호스트 기동 (pid {self.host_proc.pid}), 준비 대기")
+        self.get_logger().info(f"ZMQ 호스트 기동 (pid {proc.pid}), 준비 대기")
         # 고정 시간 대신 관측 포트가 열릴 때까지 기다린다. lekiwi_host 는
         # robot.connect()(서보 버스·카메라)를 끝낸 **뒤에** 소켓을 bind 하므로,
         # 포트가 열렸다는 건 버스를 잡았다는 뜻이다.
         t0 = time.time()
         while time.time() - t0 < HOST_READY_TIMEOUT:
-            if self.host_proc.poll() is not None:
+            # 기다리는 동안 다른 콜백(제한시간·종료)이 host_stop 으로 호스트를 내렸을 수 있다.
+            # self.host_proc 을 다시 읽으면 None 이라 죽으므로, 띄운 프로세스(proc)를 직접 본다.
+            if self.host_proc is not proc:
+                self.get_logger().warn("호스트를 기다리는 동안 다른 곳에서 호스트를 내렸다")
+                return False
+            if proc.poll() is not None:
                 self.get_logger().error(
-                    f"ZMQ 호스트가 바로 끝났다 (code {self.host_proc.returncode}). "
+                    f"ZMQ 호스트가 바로 끝났다 (code {proc.returncode}). "
                     "~/pick_host.log 확인")
                 self.host_proc = None
                 return False
@@ -352,6 +357,10 @@ class AboNav(Node):
 
     def begin_pick(self):
         self.mission["phase"] = "picking"
+        # 제한시간은 **지금** 건다. 예전엔 호스트가 뜬 뒤에야 걸어서, 그 사이(버스 넘김 +
+        # 호스트 기동, 실기기 8~9초) pick_deadline 이 0 이라 on_tick 이 곧바로 "너무 오래
+        # 걸림"으로 판정해 기동 중인 호스트를 죽였다 (2026-09-13 가짜 르키위 시험에서 발견).
+        self.pick_deadline = time.time() + self.pick_timeout
         # 서보 버스를 ZMQ 쪽에 넘긴다. 이 시점부터 오도메트리는 멈춘다.
         # 넘기지 못했는데 호스트를 띄우면 두 프로그램이 한 반이중 버스를 동시에
         # 쥐게 된다(명령이 섞여 둘 다 깨진다) -- 그래서 여기서 멈춘다.
@@ -481,7 +490,10 @@ def main():
     # ZMQ 호스트를 기다리는 동안(set_bus 응답 등) ROS 콜백이 멈추면 안 되므로
     # 멀티스레드 실행기를 쓴다. SingleThreadedExecutor 는 콜백을 하나씩만
     # 처리해서, 블로킹 구간에 /scan 구독도 액션 피드백도 전부 멎는다.
-    ex = MultiThreadedExecutor(num_threads=2)
+    # 4개: set_bus 응답 대기·호스트 준비 대기처럼 콜백 안에서 기다리는 곳이 둘 이상 겹칠 수
+    # 있다. 2개면 둘 다 기다리는 동안 응답을 처리할 스레드가 없어 서비스 응답이 영영 안 온다
+    # (2026-09-13 가짜 르키위 시험에서 발견).
+    ex = MultiThreadedExecutor(num_threads=4)
     ex.add_node(n)
     try:
         ex.spin()
