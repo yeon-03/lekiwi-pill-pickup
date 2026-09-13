@@ -109,7 +109,7 @@ class MedicineRelay:
 
     def on_pick_done(self, msg):
         # 집기 결과. 브리지는 성공이든 실패든 재정합하면서 먼저 "returning" 을 보내므로 상태
-        # 이름만으로는 결과를 알 수 없다 -- 에이보가 "약 집기 성공했습니다"를 말할 수 있게 싣는다.
+        # 이름만으로는 결과를 알 수 없다 -- 에이보가 "약 집기 성공했어요"를 말할 수 있게 싣는다.
         self.picked = bool(msg.data)
         self.log.info(f"집기 결과 수신: /abo/pick_done {self.picked}")
         if self.last_state:
