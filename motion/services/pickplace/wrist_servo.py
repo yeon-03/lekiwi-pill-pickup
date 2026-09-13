@@ -319,6 +319,7 @@ class WristServo:
         self.ready_by_hint = False  # front 정중앙 보라색 힌트로 READY 가 됐는지
         self.attempt = 0  # 0 = 첫 시도, 재시도마다 +1
         self.just_ready = False
+        self._last_x_ok = False  # 손목 박스가 사라지기 직전 마지막으로 본 x_ok
 
     @property
     def done(self) -> bool:
@@ -379,11 +380,19 @@ class WristServo:
         self.target = largest(dets)
 
         if self.target is None:
-            if self.state == "REFINING":
-                # 크기는 이미 목표에 도달해 가로/세로만 다듬던 중이었다 — 이 상태에서 박스가
-                # 사라지는 건 대부분 너무 가까워져 그리퍼/카메라 사각에 가려진 것이지 놓친 게
-                # 아니다 (2026-09-13 실사용 중 발견: LOST 로 멈춰 그리퍼를 영영 못 닫음).
-                # refine_timeout 과 같은 논리로 대충 맞은 채 READY 로 넘어간다.
+            # 크기는 이미 목표에 도달해 가로/세로만 다듬던 중(REFINING)이었는데 박스가
+            # 사라지는 건 대부분 너무 가까워져 그리퍼/카메라 사각에 가려진 것이지 놓친 게
+            # 아니다 (2026-09-13 실사용 중 발견: LOST 로 멈춰 그리퍼를 영영 못 닫음).
+            # 하지만 이걸 무조건 적용하면 실제로는 안 맞은 상태에서도 집으려 들어 정확도가
+            # 떨어졌다(2026-09-13 사용자 피드백) — front 카메라가 정중앙 높이(그리퍼 사이에
+            # 물체가 옴)를 확인해줬고, 마지막으로 본 가로 정렬도 맞았을 때만 근접으로 본다.
+            if (
+                self.state == "REFINING"
+                and descend_hint
+                and self.cfg.front_hint
+                and self.attempt == 0
+                and self._last_x_ok
+            ):
                 self.state = "READY"
                 self.just_ready = True
                 self.ready_forced = True
@@ -400,6 +409,7 @@ class WristServo:
         self.anchor_x = {"left": x1, "center": bx, "right": x2}[self.cfg.x_anchor]
         self.dx = self.anchor_x - cx0 - self.cfg.x_target_dx
         self.x_ok = abs(self.dx) <= self.cfg.x_tolerance_px
+        self._last_x_ok = self.x_ok
         # 세로
         m = self.cfg.inside_margin_px
         inside_y = y1 + m <= cy0 <= y2 - m  # 화면 중앙 높이가 박스 위/아래 변 사이 (느슨한 조건)
