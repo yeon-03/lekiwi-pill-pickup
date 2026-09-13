@@ -58,11 +58,30 @@ Physical Labs 앱을 동시에 같은 로봇에 연결할 수 없다 (동시 실
 
 ### 1. 제어 루프 (신규, 이 레포 안에만)
 
-`lekiwi_yolo_pick.py` 의 control loop(연결 → 관측 → YOLO 배치 추론 → `Approacher`/
-`ArmSequencer`/`GraspChecker` 갱신 → 오버레이 → `send_action`)를 **거의 그대로
-포팅**한다 — Physical Labs 쪽 소스에서 패턴을 다시 유추하지 않는다. 차이는 딱 하나:
-PyQt 없이 일반 Python 스레드로 돌리고, 제어는 `pyqtSignal` 대신 `threading.Event`
-로, 상태 조회는 신호 emit 대신 스레드-세이프 공유 객체 갱신으로 바꾼다.
+**정확히 무엇을 "포팅"하는지** (검증 과정에서 바로잡음): 원본 CLI(`lekiwi_yolo_pick.py`,
+`roboseasy/lekiwi.git`)를 파일째로 이 레포에 들여오지 않는다. 그 스크립트가 의존하는
+형제 파일(`lekiwi_yolo_view.py`의 `LeKiwiRobotArgs`/`YoloArgs`/`infer`/`draw` 등)은
+이미 이 레포의 `motion/services/pickplace/yolo_detect.py` 등으로 "한 줄도 다르지
+않게" 포팅되어 있다 — 즉 **원본의 로직 자체는 이미 이 레포 안에 있다.** 새로 만드는
+건 그 조각들을 원본 `control_loop()`/`main()`과 같은 **순서·판정 기준**으로 조립하는
+얇은 헤드리스 실행기뿐이다: 연결 → `wait_for_frames`류 첫 프레임 대기 → 관측 → YOLO
+배치 추론 → `Approacher`/`ArmSequencer`/`GraspChecker` 갱신 → 오버레이 → `send_action`.
+이 조립 순서는 Physical Labs 쪽 소스에서 다시 유추하지 않고 원본 CLI 스크립트를
+직접 대조해 확인한다.
+
+**원본에 없어서 새로 추가해야 하는 것 두 가지** (둘 다 원본이 cv2 창 기반 키보드
+입력에만 의존했기 때문에 헤드리스/웹 조작에는 원래 없던 것):
+- **이벤트 기반 제어**: 원본은 `--display=cv2`일 때만 `cv2.waitKey`로 SPACE(일시정지)/
+  Q(종료)를 받는다 — `--display=none`(헤드리스)이면 실행 중 제어 자체가 불가능하다.
+  웹 버튼으로 제어하려면 `threading.Event`(시작/일시정지/정지/비상정지) 주입 지점을
+  새로 만들어야 한다.
+- **정지 시 롤아웃**: 원본의 종료 처리는 사실 "현재 자세 유지 + 바퀴 정지 + 즉시
+  연결 해제"뿐이다(정상 종료·Ctrl+C·예외 구분 없이 동일). "시작 자세로 천천히
+  롤아웃"은 원본에는 없고 Physical Labs GUI 앱이 나중에(2026-09-08) 추가한 안전
+  기능이다. 이번 설계의 정지/비상정지 구분(아래 절)을 위해 **이 롤아웃 동작만은
+  의도적으로 가져온다** — GUI 앱 코드 전체를 참고하지 않고, 이 롤아웃 함수 하나만
+  (자세 보간 + 진행률 기반 반복, 그 자체로 단순하고 검증하기 쉬운 코드) 대조해
+  이 레포 안에 독립적으로 다시 구현한다.
 
 파일: `motion/services/pickplace/headless_worker.py` (가칭). 클래스
 `PickPlaceHeadlessWorker`가 `threading.Thread` 서브클래스 또는 `run()`을 갖는
@@ -72,8 +91,10 @@ plain 객체 + 별도 스레드 기동 방식 중 구현 시 더 자연스러운
 
 - 루프 본체는 `try: ... finally: 정지 시퀀스` 로 감싼다. `finally` 가 하는 일:
   1. 바퀴 정지 명령 전송
-  2. **정상 종료(stop) 인 경우만**: 현재 자세 → 시작 자세로 천천히 롤아웃(원본의
-     `_roll_out` 과 동일 — 그리퍼는 건드리지 않음, 물건을 물고 있을 수 있음)
+  2. **정상 종료(stop) 인 경우만**: 현재 자세 → 시작 자세로 천천히 롤아웃 (위
+     "제어 루프" 절에서 설명한, Physical Labs GUI 앱의 `_roll_out` 패턴을 참고해
+     이 레포에 독립적으로 새로 구현하는 부분 — 그리퍼는 건드리지 않음, 물건을
+     물고 있을 수 있음)
   3. **비상정지(abort) 또는 예외 종료인 경우**: 롤아웃 없이 그 자리에서 바로
   4. 로봇 연결 해제
 - 이 `finally` 는 웹 서버 상태와 무관하게 실행돼야 한다. 프로세스가 `SIGINT`/
@@ -97,8 +118,9 @@ plain 객체 + 별도 스레드 기동 방식 중 구현 시 더 자연스러운
 - `POST /stop` — `stop_event` 세팅 (롤아웃 후 종료)
 - `POST /estop` — `abort_event` 세팅 (즉시 정지, 롤아웃 생략) — 플래그 하나만
   세팅하는 아주 가벼운 핸들러라 다른 처리와 절대 안 겹친다
-- `GET /status` — 상태 라벨, Hz, pick 시도/재시도 횟수, dry-run 여부, "스레드
-  살아있음" 여부 등을 JSON 으로. 프론트가 주기적으로(예: 3~5Hz) 폴링
+- `GET /status` — 상태 라벨, Hz, pick 시도/재시도 횟수, dry-run 여부 등을 JSON 으로.
+  프론트가 주기적으로(예: 3~5Hz) 폴링. (스레드 생존 여부 구분 표시는 "명시적으로
+  제외" 절 참고 — 이번 스코프에서는 넣지 않는다)
 - `GET /stream/front`, `GET /stream/wrist` — 오버레이 포함 최신 프레임을 JPEG 로
   서빙 (스트리밍 방식은 구현 단계에서 MJPEG multipart 로 하되, 인코딩은 락 밖에서
   수행하고 공유 프레임 참조 교체만 락 안에서 짧게 한다 — 제어 루프를 절대 막지
