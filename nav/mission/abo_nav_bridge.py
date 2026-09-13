@@ -17,11 +17,10 @@ abo 쪽은 문자열 토픽 하나만 알면 된다. 좌표도 Nav2 액션도 �
           "fetch center to start"-> 명시적으로 출발 자리 (기본값)
           "fetch center color:red" -> 약통 색상을 함께 실어 보낸다(선택, 순서 무관 —
                                      "to"/"color:" 토큰을 먼저 걷어내고 남는 게 목적지
-                                     이름). A-Bo_project의 dialogue_node가 LLM
-                                     tool-calling으로 색상을 판단해 SSH로 이 명령을
-                                     보낸다(도메인 77 -> 42 경계를 SSH로 넘는다 — 두
-                                     로봇은 ROS_DOMAIN_ID가 달라 ROS2 토픽을 직접
-                                     공유하지 못한다).
+                                     이름). 에이보(도메인 77)는 두 길로 보낼 수 있다:
+                                     SSH 로 nav/shell/pick_trigger.sh 를 부르거나,
+                                     노트북 중계기가 두 도메인에 동시에 붙어 ROS2 로
+                                     넘겨준다(2026-09-12 실측 왕복 10 ms).
 
   출력  /abo/status    std_msgs/String   사람이 읽는 한 줄
         /abo/state     std_msgs/String   기계가 읽는 값:
@@ -37,7 +36,7 @@ abo 쪽은 문자열 토픽 하나만 알면 된다. 좌표도 Nav2 액션도 �
 
 상태 문자열은 abo 가 그대로 말하게 해도 되도록 한국어로 쓴다.
 """
-import math, os, sys, time, threading, subprocess, shlex
+import math, os, sys, time, threading, subprocess, shlex, signal, socket
 import yaml
 import rclpy
 
@@ -53,6 +52,19 @@ from std_srvs.srv import SetBool
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PREFIXES = ("go to", "goto", "go", "가자", "이동", "가줘", "가", "move to", "move")
+
+
+HOST_OBS_PORT = 5556        # lekiwi_host 관측 포트. bind 는 robot.connect() 가 끝난 뒤다
+HOST_READY_TIMEOUT = 30.0   # LeKiwiClient 연결 실측 8~9초 + 카메라 초기화 여유
+
+
+def _port_open(port, host="127.0.0.1", timeout=0.5):
+    """TCP 로 붙어지면 True. ZMTP 인사를 안 하므로 ZMQ 파이프로 등록되지 않는다."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 class AboNav(Node):
@@ -203,19 +215,41 @@ class AboNav(Node):
             return True                # 호스트는 외부에서 관리
         if self.host_proc and self.host_proc.poll() is None:
             return True
+        log = open(os.path.expanduser("~/pick_host.log"), "ab")
         self.host_proc = subprocess.Popen(shlex.split(self.host_cmd),
-                                          stdout=subprocess.DEVNULL,
-                                          stderr=subprocess.DEVNULL)
-        self.get_logger().info(f"ZMQ 호스트 기동 (pid {self.host_proc.pid})")
-        time.sleep(3.0)                # 포트 잡을 시간
-        return self.host_proc.poll() is None
+                                          stdout=log, stderr=subprocess.STDOUT)
+        log.close()                    # 자식이 fd 를 물려받았다
+        self.get_logger().info(f"ZMQ 호스트 기동 (pid {self.host_proc.pid}), 준비 대기")
+        # 고정 시간 대신 관측 포트가 열릴 때까지 기다린다. lekiwi_host 는
+        # robot.connect()(서보 버스·카메라)를 끝낸 **뒤에** 소켓을 bind 하므로,
+        # 포트가 열렸다는 건 버스를 잡았다는 뜻이다.
+        t0 = time.time()
+        while time.time() - t0 < HOST_READY_TIMEOUT:
+            if self.host_proc.poll() is not None:
+                self.get_logger().error(
+                    f"ZMQ 호스트가 바로 끝났다 (code {self.host_proc.returncode}). "
+                    "~/pick_host.log 확인")
+                self.host_proc = None
+                return False
+            if _port_open(HOST_OBS_PORT):
+                self.get_logger().info(f"ZMQ 호스트 준비 ({time.time() - t0:.1f}초)")
+                return True
+            time.sleep(0.3)
+        self.get_logger().error(f"ZMQ 호스트가 {HOST_READY_TIMEOUT:.0f}초 안에 준비되지 않았다")
+        self.host_stop()
+        return False
 
     def host_stop(self):
         if not self.host_proc:
             return
-        self.host_proc.terminate()
+        # SIGINT 로 끈다. lekiwi_host 는 KeyboardInterrupt 만 잡아 finally 에서
+        # 카메라·버스를 정리한다(SIGTERM 은 정리 없이 죽는다). 그 정리가 토크를
+        # 끄지 않는 건 start_pick_host.sh 의 disable_torque_on_disconnect=false 덕분이다
+        # -- host_cmd 를 바꿔 이 옵션을 빼면 여기서 팔 토크가 풀린다.
+        self.host_proc.send_signal(signal.SIGINT)
         try: self.host_proc.wait(timeout=8)
-        except subprocess.TimeoutExpired: self.host_proc.kill()
+        except subprocess.TimeoutExpired:
+            self.host_proc.kill(); self.host_proc.wait(timeout=3)
         self.get_logger().info("ZMQ 호스트 종료")
         self.host_proc = None
         time.sleep(1.5)                # 포트가 풀릴 시간
@@ -297,7 +331,11 @@ class AboNav(Node):
     def begin_pick(self):
         self.mission["phase"] = "picking"
         # 서보 버스를 ZMQ 쪽에 넘긴다. 이 시점부터 오도메트리는 멈춘다.
-        self.set_bus(False)
+        # 넘기지 못했는데 호스트를 띄우면 두 프로그램이 한 반이중 버스를 동시에
+        # 쥐게 된다(명령이 섞여 둘 다 깨진다) -- 그래서 여기서 멈춘다.
+        if not self.set_bus(False):
+            self.mission = None
+            return self.say("바퀴 제어를 넘기지 못해 집기를 시작하지 않았어요.", "failed")
         if not self.host_start():
             self.mission = None
             self.set_bus(True)

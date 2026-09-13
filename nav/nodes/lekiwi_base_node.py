@@ -26,12 +26,15 @@ from std_srvs.srv import SetBool
 from nav_msgs.msg import Odometry
 from tf2_ros import TransformBroadcaster
 from scservo_sdk import COMM_SUCCESS, PacketHandler, PortHandler
+from arm_hold import hold_arm  # 같은 디렉터리에 배포됨
 
 PORT, BAUD = "/dev/ttyACM0", 1000000
 LEFT, BACK, RIGHT = 7, 8, 9
 WHEELS = [LEFT, BACK, RIGHT]
 ADDR_MODE, ADDR_TORQUE, ADDR_GOAL_SPEED = 33, 40, 46
 ADDR_POS = 56
+ADDR_GOAL_POS = 42
+ARM_IDS = [1, 2, 3, 4, 5, 6]     # lerobot LeKiwi: 팔 1~6, 바퀴 7~9
 TICKS = 4096
 # 실측 교정값. 환경변수로 덮어쓸 수 있다.
 #   직진 1 m 시험 -> wheel_radius 는 0.05 가 측정 정밀도 안에서 맞음
@@ -55,6 +58,9 @@ class Bus:
         self.p = PortHandler(PORT); self.h = PacketHandler(0)
         if not self.p.openPort(): raise SystemExit(f"{PORT} 열기 실패")
         self.p.setBaudRate(BAUD)
+    def r1(self, i, a):
+        v, c, _ = self.h.read1ByteTxRx(self.p, i, a)
+        return v if c == COMM_SUCCESS else None
     def r2(self, i, a):
         v, c, _ = self.h.read2ByteTxRx(self.p, i, a)
         return v if c == COMM_SUCCESS else None
@@ -131,6 +137,15 @@ class BaseNode(Node):
             for i in WHEELS:
                 self.prev[i] = self.bus.r2(i, ADDR_POS)
             self.bus_on = True
+            # 안전망: 팔 토크가 풀려 있으면 지금 자리에서 다시 잡는다 (arm_hold.py).
+            # 정상 경로(호스트가 토크를 유지)에서는 아무것도 쓰지 않는다.
+            # 끄려면 LEKIWI_HOLD_ARM_ON_RECLAIM=0.
+            if _os.environ.get("LEKIWI_HOLD_ARM_ON_RECLAIM", "1") != "0":
+                held, unread = hold_arm(self.bus, ARM_IDS, ADDR_TORQUE, ADDR_POS, ADDR_GOAL_POS)
+                if held:
+                    self.get_logger().warn(f"팔 토크가 풀려 있어 현재 자세로 다시 잡았다: {held}")
+                if unread:
+                    self.get_logger().warn(f"팔 모터 상태를 못 읽었다 (건드리지 않음): {unread}")
             self.get_logger().warn("서보 버스 회수. odom 기준을 현재 위치로 재설정했다 "
                                    "-- 그동안의 이동은 반영되지 않으니 재정합할 것.")
             resp.success = True; resp.message = "버스 회수"

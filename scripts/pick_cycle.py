@@ -11,8 +11,10 @@ YOLO 접근+정렬/손목 서보/그립 판정 로직)를 그대로 조립해서
 motion/ 쪽 기본 동작은 "화면에서 가장 큰 검출"(largest)을 목표로 삼는다 —
 약통이 한 색만 있다면 그걸로 충분하지만, 지금은 **요청받은 색만** 집어야
 한다. 그래서 YOLO 검출 목록을 Approacher/ArmSequencer 에 넘기기 전에 색상
-HSV 범위로 한 번 걸러낸다(grasp_check.py 의 purple_mask 와 같은 방식 — 그
-파일은 그립 판정에, 여기서는 목표 선택에 재사용).
+HSV 범위로 한 번 걸러낸다. 방식은 grasp_check.py 의 purple_mask 와 같지만
+**설정은 따로 둔다** -- cfg.check 의 hue 는 "약통 양옆의 보라색 그리퍼"를 찾는
+값이라, 약통 색으로 덮어쓰면 GraspChecker 가 약통 색을 그리퍼로 착각해 집기
+성공/실패 판정이 망가진다.
 
 ## 자율주행(Nav2)과의 역할 분담
 
@@ -35,7 +37,13 @@ pick_adapter.py 가 "죽었다"와 "실패"를 구분할 수 있다.
 
 사전조건(이 스크립트가 대신할 수 없음): YOLO 모델(.pt), pre_pick/grasp/
 grasp_closed 자세 파일(JSON, motion/services/pickplace/poses.py 스키마),
-로봇 캘리브레이션. lekiwi_host 는 abo_nav_bridge.py 가 이미 띄워 둔다.
+로봇 캘리브레이션.
+
+lekiwi_host 는 abo_nav_bridge.py 가 바퀴 노드에게서 서보 버스를 넘겨받은 뒤
+nav/shell/start_pick_host.sh 로 띄운다(lekiwi_nav.launch.py 의 host_cmd). 그
+호스트는 disable_torque_on_disconnect=false 로 떠서, 집기가 끝나 호스트가
+내려가도 팔 토크가 유지된다 -- 약통을 쥔 채 복귀한다. 이 스크립트 자신은
+LeKiwiClient(네트워크 클라이언트)라 끝날 때 소켓만 닫고 토크는 건드리지 않는다.
 """
 from __future__ import annotations
 
@@ -44,17 +52,19 @@ import json
 import os
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "motion"))  # services.pickplace 를 그대로 import
 
-# 빨강/파랑/초록 HSV 대략 범위 (OpenCV H 0~180). 실물/조명에 맞춰 조정 필요 --
-# red 는 색상환 반대쪽 절반(170~180)만 쓴다(0~10쪽은 놓칠 수 있음, 아래 참고).
+# 빨강/파랑/초록 HSV 대략 범위 (OpenCV H 0~179). 실물/조명에 맞춰 조정 필요.
+# 빨강은 색상환에서 0 과 179 양쪽에 걸쳐 있어 범위가 두 개다 -- 한쪽만 쓰면
+# 조명에 따라 빨간 약통의 절반을 놓친다.
 DEFAULT_HUE_RANGES = {
-    "red": (170, 180),
-    "blue": (100, 130),
-    "green": (40, 80),
+    "red": ((0, 10), (170, 179)),
+    "blue": ((100, 130),),
+    "green": ((40, 80),),
 }
 COLORS = ("red", "green", "blue")
 
@@ -66,13 +76,17 @@ def parse_args(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--color", required=True, choices=COLORS, help="집을 약통 색상")
     ap.add_argument("--result-file", required=True, help="결과 JSON을 쓸 경로")
-    ap.add_argument("--model", required=True, help="YOLO 가중치(.pt) 경로")
-    ap.add_argument("--poses-dir", required=True,
-                    help="pre_pick.json/grasp.json/grasp_closed.json 이 있는 폴더")
+    ap.add_argument("--model", default=os.environ.get("PICK_MODEL"),
+                    required=not os.environ.get("PICK_MODEL"),
+                    help="YOLO 가중치(.pt) 경로 (환경변수 PICK_MODEL)")
+    ap.add_argument("--poses-dir", default=os.environ.get("PICK_POSES_DIR"),
+                    required=not os.environ.get("PICK_POSES_DIR"),
+                    help="pre_pick.json/grasp.json/grasp_closed.json 이 있는 폴더 (환경변수 PICK_POSES_DIR)")
     ap.add_argument("--class-index", type=int, default=None,
                     help="여러 색을 각각 다른 YOLO 클래스로 학습시켰다면 그 클래스 id. "
                          "생략하면 클래스 무관, 색상 필터만 적용")
-    ap.add_argument("--remote-ip", default="192.168.0.201", help="LeKiwi host IP")
+    ap.add_argument("--remote-ip", default=os.environ.get("LEKIWI_HOST_IP", "192.168.0.201"),
+                    help="LeKiwi host IP (환경변수 LEKIWI_HOST_IP). 무선은 DHCP 라 주소가 바뀐다")
     ap.add_argument("--robot-id", default="lekiwi01", help="LeKiwi 보정 id")
     ap.add_argument("--zmq-cmd-port", type=int, default=5555)
     ap.add_argument("--zmq-obs-port", type=int, default=5556)
@@ -81,15 +95,19 @@ def parse_args(argv=None):
     ap.add_argument("--conf", type=float, default=0.4, help="YOLO confidence 임계값")
     ap.add_argument("--min-color-ratio", type=float, default=0.25,
                     help="검출 박스 안에서 이 비율 이상이 목표 색이어야 후보로 인정")
-    ap.add_argument("--hue-min", type=int, default=None, help="색상 HSV hue 하한 오버라이드")
-    ap.add_argument("--hue-max", type=int, default=None, help="색상 HSV hue 상한 오버라이드")
+    ap.add_argument("--hue-min", type=int, default=None,
+                    help="색상 HSV hue 하한. --hue-max 와 함께 주면 기본 범위 대신 이 한 범위만 쓴다")
+    ap.add_argument("--hue-max", type=int, default=None, help="색상 HSV hue 상한 (--hue-min 참고)")
     ap.add_argument("--max-seconds", type=float, default=DEFAULT_MAX_SECONDS,
                     help="이 시간 안에 못 끝내면 실패로 종료")
     ap.add_argument("--dry-run", action="store_true", help="계산만 하고 실제로 움직이지 않음")
     a = ap.parse_args(argv)
-    lo, hi = DEFAULT_HUE_RANGES[a.color]
-    a.hue_min = a.hue_min if a.hue_min is not None else lo
-    a.hue_max = a.hue_max if a.hue_max is not None else hi
+    if (a.hue_min is None) != (a.hue_max is None):
+        ap.error("--hue-min 과 --hue-max 는 함께 줘야 한다")
+    if a.hue_min is not None:
+        a.hue_ranges = ((a.hue_min, a.hue_max),)
+    else:
+        a.hue_ranges = DEFAULT_HUE_RANGES[a.color]
     return a
 
 
@@ -109,7 +127,8 @@ def build_config(args):
     cfg.grasp.view = args.wrist_view
     cfg.check.front_view = args.approach_view
     cfg.check.wrist_view = args.wrist_view
-    cfg.check.hue_min, cfg.check.hue_max = args.hue_min, args.hue_max
+    # cfg.check.hue_min/hue_max 는 건드리지 않는다 -- 보라색 그리퍼를 찾는 값이다.
+    # 약통 색은 ColorSpec 으로 따로 넘긴다 (모듈 docstring 참고).
     cfg.views = [args.approach_view, args.wrist_view]
     cfg.dry_run = args.dry_run
     cfg.validate()
@@ -127,17 +146,39 @@ def load_poses(poses_dir: str) -> dict:
     return out
 
 
-def color_filter(dets, frame_bgr, check_cfg, min_ratio: float):
-    """검출 목록에서 박스 안 픽셀 중 목표 색 비율이 min_ratio 이상인 것만 남긴다.
+@dataclass(frozen=True)
+class ColorSpec:
+    """집을 약통의 색. 그립 판정용 GraspCheckArgs(보라색 그리퍼)와 **별개**다.
 
-    grasp_check.purple_mask 는 (hue_min/max, sat_min, val_min)만 쓰는 순수
-    함수라 그립 판정용이 아니라 여기서도(목표 선택) 그대로 재사용할 수 있다."""
-    from services.pickplace.grasp_check import purple_mask
+    hue_ranges 는 (하한, 상한) 튜플들 -- 빨강처럼 0/179 양쪽에 걸친 색은 둘.
+    sat_min/val_min 은 main() 에서 cfg.check 의 값을 그대로 가져와 실기기로
+    검증된 채도·명도 기준을 따른다(기본값은 시험용).
+    """
+    hue_ranges: tuple
+    sat_min: int = 80
+    val_min: int = 60
 
+
+def color_mask(frame_bgr, spec: ColorSpec):
+    """spec 의 모든 hue 범위를 합친 마스크 (0/255)."""
+    import cv2
+    import numpy as np
+
+    hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+    mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+    for lo, hi in spec.hue_ranges:
+        lo, hi = max(0, int(lo)), min(179, int(hi))
+        mask |= cv2.inRange(hsv, (lo, spec.sat_min, spec.val_min), (hi, 255, 255))
+    return mask
+
+
+def color_filter(dets, frame_bgr, spec: ColorSpec, min_ratio: float):
+    """검출 목록에서 박스 안 픽셀 중 목표 색 비율이 min_ratio 이상인 것만 남긴다."""
     kept = []
     h, w = frame_bgr.shape[:2]
     for d in dets:
-        x1, y1, x2, y2 = d.xyxy
+        # YOLO 좌표는 실수일 수 있다 -- 그대로 슬라이싱하면 TypeError 로 죽는다.
+        x1, y1, x2, y2 = (int(round(float(v))) for v in d.xyxy)
         x1, y1 = max(0, x1), max(0, y1)
         x2, y2 = min(w, x2), min(h, y2)
         if x2 <= x1 or y2 <= y1:
@@ -145,7 +186,7 @@ def color_filter(dets, frame_bgr, check_cfg, min_ratio: float):
         roi = frame_bgr[y1:y2, x1:x2]
         if roi.size == 0:
             continue
-        ratio = float(purple_mask(roi, check_cfg).mean() / 255.0)
+        ratio = float(color_mask(roi, spec).mean() / 255.0)
         if ratio >= min_ratio:
             kept.append(d)
     return kept
@@ -179,6 +220,7 @@ def main(argv=None) -> int:
         cfg = build_config(args)
     except PickPlaceError as exc:
         return finish(False, False, str(exc))
+    spec = ColorSpec(args.hue_ranges, cfg.check.sat_min, cfg.check.val_min)
 
     try:
         model = load_model(cfg.yolo)
@@ -250,12 +292,12 @@ def main(argv=None) -> int:
             # 목표 색만 남긴다 -- motion/ 기본 동작(가장 큰 검출)은 색을 모르므로
             # 여기서 미리 걸러야 엉뚱한 색 약통을 쫓아가지 않는다.
             dets_by_view[cfg.approach.view] = color_filter(
-                dets_by_view.get(cfg.approach.view, []), frames_bgr[cfg.approach.view], cfg.check, args.min_color_ratio)
+                dets_by_view.get(cfg.approach.view, []), frames_bgr[cfg.approach.view], spec, args.min_color_ratio)
             if cfg.grasp.view in frames_bgr:
                 wrist_dets = filter_wrist_dets(
                     dets_by_view.get(cfg.grasp.view, []), frames_bgr[cfg.grasp.view].shape, cfg.grasp)
                 dets_by_view[cfg.grasp.view] = color_filter(
-                    wrist_dets, frames_bgr[cfg.grasp.view], cfg.check, args.min_color_ratio)
+                    wrist_dets, frames_bgr[cfg.grasp.view], spec, args.min_color_ratio)
             wrist_frame = frames_bgr.get(cfg.grasp.view)
 
             cmd = ap.update(dets_by_view[cfg.approach.view], frames_bgr[cfg.approach.view].shape, loop_start)

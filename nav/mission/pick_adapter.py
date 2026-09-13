@@ -216,6 +216,15 @@ def main():
                          "같은 것이지만, 집기 의존성(numpy/opencv/scipy/lerobot)이 "
                          "다른 venv 에 있다면 그쪽 python 을 지정할 것. "
                          "예: --python ~/lekiwi-pill-pickup/.venv/bin/python")
+    # pick_cycle.py 의 필수 인자는 여기서 받아 넘긴다. 예전엔 pick_args 뒤에 손으로
+    # 붙여야 했고, 빠뜨리면 pick_cycle 이 인자 오류로 바로 죽어 "결과 파일 없음"
+    # 이라는 엉뚱한 이유만 남았다.
+    ap.add_argument("--model", default=os.environ.get("PICK_MODEL", ""),
+                    help="YOLO 가중치(.pt). 환경변수 PICK_MODEL")
+    ap.add_argument("--poses-dir", default=os.environ.get("PICK_POSES_DIR", ""),
+                    help="pre_pick/grasp/grasp_closed.json 이 있는 폴더. 환경변수 PICK_POSES_DIR")
+    ap.add_argument("--remote-ip", default=os.environ.get("LEKIWI_HOST_IP", ""),
+                    help="로봇 주소. 환경변수 LEKIWI_HOST_IP (무선은 DHCP 라 바뀐다)")
     ap.add_argument("pick_args", nargs="*",
                     help="pick_cycle.py 에 그대로 넘길 인자 (예: -- --grasp-lift 68)")
     a = ap.parse_args()
@@ -232,8 +241,31 @@ def main():
     if not os.path.isfile(python):
         ap.error(f"인터프리터가 없다: {python}")
 
+    # 줄 수 있는 건 시작할 때 검사한다 -- 집기 도중에 알게 되면 로봇이 이미
+    # 목적지까지 간 뒤다.
+    pick_opts = []
+    if a.model:
+        model = os.path.expanduser(a.model)
+        if not os.path.isfile(model):
+            ap.error(f"YOLO 모델 파일이 없다: {model}")
+        pick_opts += ["--model", model]
+    if a.poses_dir:
+        poses = os.path.expanduser(a.poses_dir)
+        if not os.path.isdir(poses):
+            ap.error(f"자세 폴더가 없다: {poses}")
+        missing = [n for n in ("pre_pick", "grasp", "grasp_closed")
+                   if not os.path.isfile(os.path.join(poses, n + ".json"))]
+        if missing:
+            print(f"경고: 자세 파일 없음 {missing}", file=sys.stderr)
+        pick_opts += ["--poses-dir", poses]
+    if a.remote_ip:
+        pick_opts += ["--remote-ip", a.remote_ip]
+    if not (a.model and a.poses_dir):
+        print("경고: --model/--poses-dir 이 없다. 실제 pick_cycle.py 는 둘 다 필수라 "
+              "집기가 바로 실패한다 (시험용 가짜 pick_cycle 이면 무시)", file=sys.stderr)
+
     rclpy.init()
-    node = PickAdapter(a.repo, mapping, a.timeout, python, list(a.pick_args))
+    node = PickAdapter(a.repo, mapping, a.timeout, python, pick_opts + list(a.pick_args))
     ex = MultiThreadedExecutor(num_threads=2)
     ex.add_node(node)
     try:

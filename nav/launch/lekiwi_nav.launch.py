@@ -39,6 +39,12 @@ def generate_launch_description():
                                           "표시된 시작 지점에 있다는 전제"),
         DeclareLaunchArgument("abo", default_value="true",
                               description="abo 명령 중개 노드(/abo/command)를 띄운다"),
+        # 집기 단계에 브리지가 서보 버스를 넘겨받은 뒤 띄우는 ZMQ 호스트.
+        # 예전엔 이 인자가 없어서 host_start() 가 아무것도 안 띄우고 성공으로
+        # 넘어갔다 -- 누가 호스트를 계속 켜 두면 주행 중 버스를 뺏겼고(Nav2 사망),
+        # 아무도 안 켜면 집기가 붙을 곳이 없었다. '' 이면 외부에서 관리한다.
+        DeclareLaunchArgument("host_cmd", default_value=f"bash {HOME}/start_pick_host.sh",
+                              description="집기용 ZMQ 호스트 실행 명령. '' 이면 띄우지 않음"),
     ]
 
     sensors = IncludeLaunchDescription(
@@ -80,7 +86,8 @@ def generate_launch_description():
     # 빠지면, 양보 동안 움직인 만큼의 오도메트리 공백이 복구되지 않는다.
     abo = TimerAction(period=58.0, actions=[ExecuteProcess(
         cmd=["/usr/bin/python3", "-u", f"{HOME}/abo_nav_bridge.py",
-             "--map", LaunchConfiguration("map")],
+             "--map", LaunchConfiguration("map"),
+             "--host-cmd", LaunchConfiguration("host_cmd")],
         name="abo_nav_bridge", output="screen", respawn=True, respawn_delay=3.0,
         condition=IfCondition(LaunchConfiguration("abo")))])
 

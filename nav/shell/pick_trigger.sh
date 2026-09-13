@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
-# A-Bo_project(dialogue_node, ROS_DOMAIN_ID=77)가 SSH로 이 로봇(lekiwi01,
-# ROS_DOMAIN_ID=42)에 접속해 실행한다 -- 두 로봇은 도메인이 달라 ROS2 토픽을
-# 직접 공유하지 못해서, 색상별 트리거를 SSH 커맨드 하나로 여기까지 넘긴다
-# (lekiwi_control.py의 SKILL_MAP pick_red/pick_blue/pick_green 항목이 이걸 부른다).
+# 색상 지정 약통 왕복 미션을 한 번 트리거한다.
 #
-# 여기서는 abo_nav_bridge.py 가 구독 중인 /abo/command 에 "fetch center
-# color:<색>" 을 1회 발행만 한다 -- 실제 왕복 미션(이동/픽/복귀)은
-# abo_nav_bridge.py 가 이어서 처리한다.
+# /abo/command 에 "fetch <목적지> color:<색>" 을 1회 발행만 한다 -- 실제 왕복
+# (이동 -> 집기 -> 복귀)은 abo_nav_bridge.py 가 이어서 처리한다.
+# 에이보(A-Bo_project, 도메인 77)가 SSH 로 이 로봇(도메인 42)에서 부르는 용도다.
+# 에이보 쪽 스킬 이름과 호출 방식은 A-Bo_project 가 정한다.
 #
-#   bash ~/pick_trigger.sh red
+#   bash ~/pick_trigger.sh red              # 목적지 기본값 center (waypoints.yaml)
+#   bash ~/pick_trigger.sh green center
 set -e
-COLOR="${1:?사용법: pick_trigger.sh <red|blue|green>}"
+COLOR="${1:?사용법: pick_trigger.sh <red|green|blue> [목적지=center]}"
+DEST="${2:-center}"
+case "$COLOR" in
+    red|green|blue) ;;
+    *) echo "지원하지 않는 색: $COLOR (red|green|blue)" >&2; exit 2 ;;
+esac
 source /opt/ros/jazzy/setup.bash
-export ROS_DOMAIN_ID=42
-exec ros2 topic pub -1 /abo/command std_msgs/msg/String "{data: 'fetch center color:${COLOR}'}"
+# SSH 비대화형 셸은 .bashrc 를 안 읽으므로 프로파일에서 도메인을 가져온다.
+[ -f "$HOME/lekiwi_profile.sh" ] && source "$HOME/lekiwi_profile.sh"
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
+exec ros2 topic pub -1 /abo/command std_msgs/msg/String "{data: 'fetch ${DEST} color:${COLOR}'}"

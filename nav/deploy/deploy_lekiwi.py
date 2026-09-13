@@ -24,6 +24,7 @@ SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SHARED = [
     # 센서/구동 노드
     "nodes/ydlidar_node.py", "nodes/bmi160_node.py", "nodes/lekiwi_base_node.py",
+    "nodes/arm_hold.py",
     # 위치추정 / 미션
     "mission/refine_pose.py", "mission/set_pose.py", "mission/relocalize.sh",
     "mission/keep_particles.py", "mission/find_pose.py", "mission/align_helper.py",
@@ -37,7 +38,7 @@ SHARED = [
     # 셸 (런치로 대체됐지만 텔레옵 등 일부는 여전히 필요)
     "shell/run_base.sh", "shell/run_imu.sh", "shell/run_lidar.sh",
     "shell/run_lidar_front60.sh", "shell/run_rsp.sh", "shell/run_teleop.sh",
-    "shell/run_amcl.sh", "shell/run_nav2.sh", "shell/pick_trigger.sh",
+    "shell/run_amcl.sh", "shell/run_nav2.sh", "shell/pick_trigger.sh", "shell/start_pick_host.sh",
     "shell/start_all.sh", "shell/stop_all.sh", "shell/start_nav.sh",
     "shell/stop_nav2.sh", "shell/start_cartographer.sh", "shell/stop_cartographer.sh",
     # 설정 / 설치
