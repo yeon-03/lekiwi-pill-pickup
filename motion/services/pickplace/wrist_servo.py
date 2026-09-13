@@ -379,6 +379,15 @@ class WristServo:
         self.target = largest(dets)
 
         if self.target is None:
+            if self.state == "REFINING":
+                # 크기는 이미 목표에 도달해 가로/세로만 다듬던 중이었다 — 이 상태에서 박스가
+                # 사라지는 건 대부분 너무 가까워져 그리퍼/카메라 사각에 가려진 것이지 놓친 게
+                # 아니다 (2026-09-13 실사용 중 발견: LOST 로 멈춰 그리퍼를 영영 못 닫음).
+                # refine_timeout 과 같은 논리로 대충 맞은 채 READY 로 넘어간다.
+                self.state = "READY"
+                self.just_ready = True
+                self.ready_forced = True
+                return self.current
             if now - self.last_seen > self.cfg.lost_timeout_s:
                 self.state = "LOST"
             return self.current  # 잠깐 놓친 건 그대로 유지
