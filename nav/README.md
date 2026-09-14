@@ -123,6 +123,9 @@ python3 nav/mission/pick_adapter.py --repo ~/lekiwi-pill-pickup \
     --poses-dir ~/.PhysicalLabs/pickplace/lekiwi01/poses
 ```
 
+lekiwi01 에서 쓰는 자세 세트(2026-09-14, 팔이 옆으로 쓸리지 않게 다시 저장)는
+`scripts/poses/lekiwi01/` 에 있습니다. `--poses-dir` 로 그 폴더를 바로 가리켜도 됩니다.
+
 웹 시연 UI(`motion/webui`)와 이 어댑터를 **동시에 쓰지 마세요** — 로봇
 호스트는 클라이언트를 하나만 받습니다.
 
