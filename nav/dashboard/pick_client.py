@@ -39,9 +39,13 @@ class PickClient:
     def start(self, on_update, interval_s: float = 0.2) -> threading.Thread:
         def loop():
             while True:
-                ok, status = self.poll_once()
-                on_update(ok, status)
-                time.sleep(interval_s)
+                try:
+                    ok, status = self.poll_once()
+                    on_update(ok, status)
+                except Exception as exc:
+                    print(f"[pick_client] 경고: 상태 갱신 오류 {type(exc).__name__}: {exc}", flush=True)
+                finally:
+                    time.sleep(interval_s)
 
         th = threading.Thread(target=loop, daemon=True, name="pick-client")
         th.start()

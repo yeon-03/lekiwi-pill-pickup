@@ -1,3 +1,4 @@
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -8,7 +9,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from dashboard_state import DashboardState  # noqa: E402
 from map_geometry import MapInfo  # noqa: E402
-from web_app import create_app, make_stop_handlers, sse_stream  # noqa: E402
+from web_app import create_app, make_stop_handlers, sse_events  # noqa: E402
 
 INFO = MapInfo(0.05, -0.707, -0.919, 53, 48, Path("/nonexistent.pgm"))
 META = {"resolution": 0.05, "origin_x": -0.707, "origin_y": -0.919, "width": 53, "height": 48,
@@ -16,12 +17,13 @@ META = {"resolution": 0.05, "origin_x": -0.707, "origin_y": -0.919, "width": 53,
 
 
 class FakePick:
-    def __init__(self):
+    def __init__(self, estop_text="estop 보냄"):
         self.estops = 0
+        self.estop_text = estop_text
 
     def estop(self):
         self.estops += 1
-        return "estop 보냄"
+        return self.estop_text
 
 
 def _handlers(reachable):
@@ -39,7 +41,7 @@ def test_stop_calls_estop_then_publishes_when_pick_reachable():
     res = on_stop()
     assert res == {"ok": True, "results": ["estop 보냄", "stop 발행"]}
     assert pick.estops == 1 and published == ["stop"]
-    assert state.snapshot(10.0)["stop"]["last_result"] == "stop 발행"
+    assert state.snapshot(10.0)["stop"]["last_result"] == "estop 보냄 · stop 발행"
 
 
 def test_stop_skips_estop_when_pick_not_running():
@@ -67,9 +69,54 @@ def test_pick_update_estops_when_web_comes_up_while_latched():
     assert pick.estops == 1
 
 
-def test_sse_stream_formats_json_events():
-    it = sse_stream(lambda: {"a": 1}, interval_s=0.0, sleep=lambda s: None, max_events=2)
-    assert list(it) == ['data: {"a": 1}\n\n', 'data: {"a": 1}\n\n']
+def test_estop_failure_is_kept_and_stop_still_publishes():
+    state = DashboardState(INFO)
+    pick = FakePick(estop_text="estop 실패: timed out")
+    published = []
+    clock = iter([10.0, 10.05]).__next__
+    on_stop, *_ = make_stop_handlers(state, pick, lambda: published.append("stop"), clock=clock)
+    state.set_pick(True, {"state": "SEARCH"}, 9.0)
+    res = on_stop()
+    assert res == {"ok": True, "results": ["estop 실패: timed out", "stop 발행"]}
+    assert published == ["stop"]
+    assert state.snapshot(10.0)["stop"]["last_result"] == "estop 실패: timed out · stop 발행"
+
+
+def test_sse_events_formats_json_events():
+    async def run_test():
+        async def is_disconnected():
+            return False
+
+        async def async_sleep(s):
+            pass
+
+        events = []
+        async for event in sse_events(lambda: {"a": 1}, is_disconnected, interval_s=0.0, sleep=async_sleep, max_events=2):
+            events.append(event)
+        return events
+
+    result = asyncio.run(run_test())
+    assert result == ['data: {"a": 1}\n\n', 'data: {"a": 1}\n\n']
+
+
+def test_sse_events_stops_when_client_disconnects():
+    async def run_test():
+        call_count = [0]
+
+        async def is_disconnected():
+            call_count[0] += 1
+            return call_count[0] > 1
+
+        async def async_sleep(s):
+            pass
+
+        events = []
+        async for event in sse_events(lambda: {"a": 1}, is_disconnected, interval_s=0.0, sleep=async_sleep, max_events=None):
+            events.append(event)
+        return events
+
+    result = asyncio.run(run_test())
+    assert len(result) == 1 and result[0] == 'data: {"a": 1}\n\n'
 
 
 def test_routes():

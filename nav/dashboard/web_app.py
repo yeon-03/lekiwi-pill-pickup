@@ -1,16 +1,17 @@
 """대시보드 HTTP 계층: 페이지·지도 이미지·SSE 스냅샷·정지 API.
 
-SSE 는 동기 제너레이터를 StreamingResponse 에 넘긴다 — Starlette 가 스레드풀에서 next() 를
-부르므로 time.sleep 이 이벤트 루프를 막지 않는다 (motion/webui/app.py 와 같은 방식).
+SSE 는 비동기 제너레이터를 StreamingResponse 에 넘긴다 — 클라이언트 연결 해제를 감지하므로
+리소스 누수가 없다.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
-from typing import Iterator
+from typing import AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -28,8 +29,9 @@ def make_stop_handlers(state, pick, publish_stop, clock=time.time):
             else:
                 publish_stop()
                 text = "stop 발행"
-            state.note_stop(a, text)
             results.append(text)
+        if results:
+            state.note_stop(actions[-1], " · ".join(results))
         return results
 
     def on_stop() -> dict:
@@ -50,12 +52,15 @@ def make_stop_handlers(state, pick, publish_stop, clock=time.time):
     return on_stop, on_release, on_tick, on_pick_update
 
 
-def sse_stream(snapshot_fn, interval_s: float = 0.2, sleep=time.sleep, max_events: int | None = None) -> Iterator[str]:
+async def sse_events(snapshot_fn, is_disconnected, interval_s: float = 0.2, sleep=asyncio.sleep,
+                     max_events: int | None = None) -> AsyncIterator[str]:
     n = 0
     while max_events is None or n < max_events:
+        if await is_disconnected():
+            return
         yield f"data: {json.dumps(snapshot_fn(), ensure_ascii=False)}\n\n"
         n += 1
-        sleep(interval_s)
+        await sleep(interval_s)
 
 
 def create_app(state, map_png: bytes, map_meta: dict, on_stop, on_release) -> FastAPI:
@@ -75,8 +80,8 @@ def create_app(state, map_png: bytes, map_meta: dict, on_stop, on_release) -> Fa
         return map_meta
 
     @app.get("/api/events")
-    def events() -> StreamingResponse:
-        return StreamingResponse(sse_stream(lambda: state.snapshot(time.time())), media_type="text/event-stream",
+    async def events(request: Request) -> StreamingResponse:
+        return StreamingResponse(sse_events(lambda: state.snapshot(time.time()), request.is_disconnected), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache"})
 
     @app.post("/api/stop")

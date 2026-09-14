@@ -40,3 +40,18 @@ def test_start_calls_update_in_background():
     PickClient(fetch=lambda m, u, t: b'{"state": "X"}').start(
         lambda ok, st: got.set() if (ok, st) == (True, {"state": "X"}) else None, interval_s=0.01)
     assert got.wait(1.0)
+
+
+def test_start_keeps_polling_after_update_raises():
+    calls = []
+    got = threading.Event()
+
+    def on_update(ok, st):
+        calls.append((ok, st))
+        if len(calls) == 1:
+            raise RuntimeError("simulated error")
+        got.set()
+
+    PickClient(fetch=lambda m, u, t: b'{"state": "X"}').start(on_update, interval_s=0.01)
+    assert got.wait(1.0), "Second call should arrive after first raises"
+    assert len(calls) >= 2, f"Expected at least 2 calls, got {len(calls)}"
