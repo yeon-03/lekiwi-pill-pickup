@@ -399,3 +399,26 @@ def test_target_class_filter_picks_only_matching_color():
     # red(center_error=+19)가 골라졌다면 부호가 반대(-theta)로 나왔을 것이다.
     assert all(t > 0 for t in thetas)
     assert w.status.get()["target_class"] == "green_pill_bottle"
+
+
+def test_status_reports_frame_age_purple_and_retry_depth():
+    import time as _time
+
+    robot = FakeRobot()
+    w = _worker(robot)
+    w.start_background()                      # 워커는 일시정지로 시작 → 루프는 돌며 status 를 쓴다
+    deadline = _time.time() + 3.0
+    status = {}
+    while _time.time() < deadline:
+        status = w.status.get()
+        if "frame_age_s" in status and status["frame_age_s"].get("front", 0) > 0.2:
+            break
+        _time.sleep(0.05)
+    w.request_stop()
+    w.join(timeout=5.0)
+
+    assert set(status["frame_age_s"]) == {"front", "wrist"}
+    assert status["frame_age_s"]["front"] > 0.2          # FakeRobot 은 같은 프레임만 준다
+    assert set(status["purple"]) == {"front", "wrist"}
+    assert status["purple"]["front"] == {"ratio": 0.0, "thr": w.cfg.check.min_ratio_for("front")}
+    assert status["retry_depth"] == 0.0

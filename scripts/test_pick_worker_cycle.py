@@ -1,0 +1,342 @@
+#!/usr/bin/env python3
+"""pick_worker_cycle.py 를 로봇·YOLO 없이 검증한다.
+
+  python3 -m pytest scripts/test_pick_worker_cycle.py
+
+가짜 워커로 끝나는 경로(성공/포기/오류/시간초과/외부 종료/루프 사망)를 전부 돌리고,
+진짜 PickPlaceHeadlessWorker 도 가짜 로봇(motion 테스트의 FakeRobot)으로 한 번
+돌려 정지·연결 해제·바퀴 정지까지 확인한다.
+"""
+import json
+import sys
+import tempfile
+import threading
+import time
+import unittest
+from pathlib import Path
+
+import numpy as np
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parent / "motion"))
+
+import pick_cycle  # noqa: E402
+import pick_worker_cycle as pwc  # noqa: E402
+from services.pickplace.arm_sequencer import PickArgs  # noqa: E402
+from services.pickplace.config import PickPlaceConfig  # noqa: E402
+from services.pickplace.headless_worker import PickPlaceHeadlessWorker  # noqa: E402
+from services.pickplace.test_headless_worker import FakeRobot, _fake_infer, _fake_load_model  # noqa: E402
+from services.pickplace.yolo_detect import Detection  # noqa: E402
+
+REQ = ["--color", "red", "--result-file", "/tmp/r.json", "--model", "m.pt", "--poses-dir", "p"]
+
+
+class TestResolveTargetClass(unittest.TestCase):
+    def test_picks_class_with_color_word(self):
+        names = {0: "red_pill_bottle", 1: "green_pill_bottle"}
+        self.assertEqual(pwc.resolve_target_class(names, "red"), "red_pill_bottle")
+        self.assertEqual(pwc.resolve_target_class(names, "green"), "green_pill_bottle")
+
+    def test_korean_class_names(self):
+        self.assertEqual(pwc.resolve_target_class({0: "빨간약통", 1: "초록약통"}, "red"), "빨간약통")
+
+    def test_color_blind_model_falls_back_to_hsv(self):
+        self.assertIsNone(pwc.resolve_target_class({0: "cube"}, "red"))
+        self.assertIsNone(pwc.resolve_target_class({0: "bottle"}, "green"))
+
+    def test_missing_color_returns_none(self):
+        self.assertIsNone(pwc.resolve_target_class({0: "green_pill"}, "red"))
+
+    def test_ambiguous_returns_none(self):
+        self.assertIsNone(pwc.resolve_target_class({0: "red_pill", 1: "red_cap"}, "red"))
+
+    def test_explicit_class_must_exist(self):
+        names = {0: "a", 1: "b"}
+        self.assertEqual(pwc.resolve_target_class(names, "red", explicit="b"), "b")
+        with self.assertRaises(ValueError):
+            pwc.resolve_target_class(names, "red", explicit="zzz")
+
+    def test_accepts_name_list(self):
+        self.assertEqual(pwc.resolve_target_class(["blue_bottle"], "blue"), "blue_bottle")
+
+
+def patch_frame():
+    """왼쪽 40px 는 빨강(H=175), 오른쪽 40px 는 초록(H=60)."""
+    import cv2
+    hsv = np.zeros((40, 80, 3), dtype=np.uint8)
+    hsv[:, :40] = (175, 220, 220)
+    hsv[:, 40:] = (60, 220, 220)
+    return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+
+
+class TestMakeInfer(unittest.TestCase):
+    red_box = Detection(name="bottle", conf=0.9, xyxy=(0, 0, 40, 40), cls=0)
+    green_box = Detection(name="bottle", conf=0.9, xyxy=(40, 0, 80, 40), cls=0)
+
+    def setUp(self):
+        boxes = [self.red_box, self.green_box]
+        # 바운드 메서드는 접근할 때마다 새 객체라 assertIs 로 비교할 수 없다 -- 평범한 함수로 둔다.
+        self.base = lambda model, cfg, frames: {v: list(boxes) for v in frames}
+
+    def test_no_spec_passes_through(self):
+        self.assertIs(pwc.make_infer(self.base, None, 0.5), self.base)
+
+    def test_hsv_spec_keeps_only_target_color(self):
+        spec = pick_cycle.ColorSpec(pick_cycle.DEFAULT_HUE_RANGES["red"])
+        out = pwc.make_infer(self.base, spec, 0.5)(None, None, {"front": patch_frame(), "wrist": patch_frame()})
+        self.assertEqual(out["front"], [self.red_box])
+        self.assertEqual(out["wrist"], [self.red_box])
+
+
+class TestOutcome(unittest.TestCase):
+    def test_states(self):
+        self.assertIsNone(pwc.outcome({}))
+        self.assertIsNone(pwc.outcome({"state": "ALIGNING"}))
+        self.assertEqual(pwc.outcome({"arm_done": True})[:2], (True, True))
+        self.assertEqual(pwc.outcome({"gave_up": True})[:2], (False, False))
+        ok, grasped, why = pwc.outcome({"state": "ERROR", "error": "카메라 없음"})
+        self.assertFalse(ok)
+        self.assertIn("카메라 없음", why)
+
+
+class FakeStatus:
+    def __init__(self, seq):
+        self.seq = list(seq)
+
+    def get(self):
+        return self.seq.pop(0) if len(self.seq) > 1 else self.seq[0]
+
+
+class FakeWorker:
+    def __init__(self, statuses, alive=True):
+        self.status = FakeStatus(statuses)
+        self.calls = []
+        self._thread = type("T", (), {"is_alive": lambda _s: alive})()
+
+    def set_target_class(self, name):
+        self.calls.append(("target", name))
+
+    def start_background(self):
+        self.calls.append("start")
+
+    def resume(self):
+        self.calls.append("resume")
+
+    def request_stop(self):
+        self.calls.append("stop")
+
+    def join(self, timeout=None):
+        self.calls.append("join")
+
+
+class FakeClock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+    def sleep(self, dt):
+        self.t += dt
+
+
+def run(worker, max_seconds=10.0, **kw):
+    clk = FakeClock()
+    return pwc.run_cycle(worker, max_seconds=max_seconds, clock=clk, sleep=clk.sleep, **kw)
+
+
+class TestRunCycle(unittest.TestCase):
+    def assert_stopped(self, w):
+        self.assertIn("stop", w.calls)
+        self.assertIn("join", w.calls)
+        self.assertLess(w.calls.index("resume"), w.calls.index("stop"))
+
+    def test_success(self):
+        w = FakeWorker([{"state": "ALIGNING"}, {"state": "CARRY_HOME"}, {"state": "DONE", "arm_done": True}])
+        r = run(w, target_class="red_pill_bottle")
+        self.assertTrue(r["success"])
+        self.assertTrue(r["grasped"])
+        self.assertIn(("target", "red_pill_bottle"), w.calls)
+        self.assert_stopped(w)
+
+    def test_no_target_class_does_not_set_filter(self):
+        w = FakeWorker([{"arm_done": True}])
+        run(w)
+        self.assertFalse(any(isinstance(c, tuple) for c in w.calls))
+
+    def test_gave_up(self):
+        r = run(FakeWorker([{"state": "GRASP_FAIL"}, {"state": "GIVE_UP", "gave_up": True}]))
+        self.assertFalse(r["success"])
+        self.assertIn("포기", r["verdict_reason"])
+
+    def test_error(self):
+        r = run(FakeWorker([{"state": "ERROR", "error": "8초 안에 카메라 프레임을 받지 못했습니다."}]))
+        self.assertFalse(r["success"])
+        self.assertIn("카메라", r["verdict_reason"])
+
+    def test_timeout_while_holding_bottle_reports_grasped(self):
+        w = FakeWorker([{"state": "GRASP_CHECK"}])
+        r = run(w, max_seconds=1.0)
+        self.assertFalse(r["success"])
+        self.assertTrue(r["grasped"])
+        self.assertIn("제한시간", r["verdict_reason"])
+        self.assert_stopped(w)
+
+    def test_timeout_before_grasp(self):
+        r = run(FakeWorker([{"state": "SEARCHING"}]), max_seconds=1.0)
+        self.assertFalse(r["grasped"])
+
+    def test_external_stop_signal(self):
+        flag = threading.Event()
+        flag.set()
+        w = FakeWorker([{"state": "ALIGNING"}])
+        r = run(w, stop_flag=flag)
+        self.assertFalse(r["success"])
+        self.assertIn("외부 종료", r["verdict_reason"])
+        self.assert_stopped(w)
+
+    def test_loop_died_without_result(self):
+        r = run(FakeWorker([{"state": "ALIGNING"}], alive=False))
+        self.assertFalse(r["success"])
+        self.assertIn("결과 없이", r["verdict_reason"])
+
+
+class TestWithRealWorker(unittest.TestCase):
+    """진짜 PickPlaceHeadlessWorker + 가짜 로봇. 실제 시간으로 짧게 돈다."""
+
+    def test_camera_missing_ends_as_error_and_disconnects(self):
+        robot = FakeRobot()
+        robot.get_observation = lambda: {}
+        w = PickPlaceHeadlessWorker(robot, PickPlaceConfig(pick=PickArgs(enabled=False)), {},
+                                    infer_fn=_fake_infer, load_model_fn=_fake_load_model,
+                                    first_obs_timeout_s=0.3, rollout_time_s=0.1)
+        r = pwc.run_cycle(w, max_seconds=5.0, poll_s=0.05, join_timeout_s=5.0)
+        self.assertFalse(r["success"])
+        self.assertIn("카메라", r["verdict_reason"])
+        self.assertFalse(robot.is_connected)
+
+    def test_nothing_found_times_out_stops_wheels_and_disconnects(self):
+        robot = FakeRobot()
+        w = PickPlaceHeadlessWorker(robot, PickPlaceConfig(pick=PickArgs(enabled=False)), {},
+                                    infer_fn=_fake_infer, load_model_fn=_fake_load_model,
+                                    first_obs_timeout_s=0.5, rollout_time_s=0.1)
+        r = pwc.run_cycle(w, max_seconds=0.6, poll_s=0.05, join_timeout_s=5.0,
+                          target_class="red_pill_bottle")
+        self.assertFalse(r["success"])
+        self.assertIn("제한시간", r["verdict_reason"])
+        self.assertEqual(w.get_target_class(), "red_pill_bottle")
+        self.assertFalse(robot.is_connected)
+        self.assertTrue(robot.sent_actions)
+        for a in robot.sent_actions:   # 아무것도 못 찾았으니 바퀴는 한 번도 안 굴렀다
+            self.assertEqual((a["x.vel"], a["y.vel"], a["theta.vel"]), (0.0, 0.0, 0.0))
+
+
+class TestMain(unittest.TestCase):
+    def test_missing_poses_writes_failure_without_touching_robot(self):
+        with tempfile.TemporaryDirectory() as d:
+            result = Path(d) / "r.json"
+            rc = pwc.main(["--color", "green", "--result-file", str(result),
+                           "--model", "없는모델.pt", "--poses-dir", d])
+            self.assertEqual(rc, 0)
+            data = json.loads(result.read_text(encoding="utf-8"))
+            self.assertFalse(data["success"])
+            self.assertIn("자세 파일 없음", data["verdict_reason"])
+            self.assertEqual(data["color"], "green")
+
+    def test_bad_model_writes_failure(self):
+        from services.pickplace.poses import save_pose
+        with tempfile.TemporaryDirectory() as d:
+            for n in pwc.REQUIRED_POSES:
+                save_pose(Path(d) / f"{n}.json", n, "lekiwi01", {"arm_gripper.pos": 10.0}, backup=False)
+            result = Path(d) / "r.json"
+            pwc.main(["--color", "red", "--result-file", str(result),
+                      "--model", str(Path(d) / "없는모델.pt"), "--poses-dir", d,
+                      "--remote-ip", "10.255.255.1"])
+            data = json.loads(result.read_text(encoding="utf-8"))
+            self.assertFalse(data["success"])
+            self.assertIn("시작 실패", data["verdict_reason"])
+
+    def test_args_same_as_pick_cycle(self):
+        a = pwc.parse_args(REQ + ["--remote-ip", "10.0.0.9"])
+        b = pick_cycle.parse_args(REQ + ["--remote-ip", "10.0.0.9"])
+        for k in ("color", "result_file", "model", "poses_dir", "remote_ip"):
+            self.assertEqual(getattr(a, k), getattr(b, k), k)
+
+
+class TestWeb(unittest.TestCase):
+    def test_args_default_off_and_local_bind(self):
+        a = pwc.parse_args(REQ)
+        self.assertIsNone(a.web_port)
+        self.assertEqual(a.web_host, "127.0.0.1")
+        b = pwc.parse_args(REQ + ["--web-port", "8000", "--web-host", "0.0.0.0"])
+        self.assertEqual((b.web_port, b.web_host), (8000, "0.0.0.0"))
+
+    def test_start_web_runs_server_in_background_thread(self):
+        import socket
+        called = threading.Event()
+        seen = {}
+
+        def serve(app, host, port):
+            seen.update(app=app, host=host, port=port)
+            called.set()
+
+        with socket.socket() as s:                       # 비어 있는 포트 하나 고르기
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        ok = pwc.start_web("W", "127.0.0.1", port, app_factory=lambda w: ("app", w), serve=serve)
+        self.assertTrue(ok)
+        self.assertTrue(called.wait(2.0))
+        self.assertEqual(seen, {"app": ("app", "W"), "host": "127.0.0.1", "port": port})
+
+    def test_start_web_returns_false_when_port_busy(self):
+        import socket
+        with socket.socket() as busy:
+            busy.bind(("127.0.0.1", 0))
+            busy.listen(1)
+            port = busy.getsockname()[1]
+            served = []
+            ok = pwc.start_web("W", "127.0.0.1", port, app_factory=lambda w: w,
+                               serve=lambda *a: served.append(a))
+        self.assertFalse(ok)
+        self.assertEqual(served, [])
+
+    def test_start_web_succeeds_when_port_in_time_wait(self):
+        # 서버 쪽이 먼저 끊은 연결은 TIME_WAIT 로 남는다(urllib 폴링·MJPEG). uvicorn 은 SO_REUSEADDR 로
+        # 그 포트를 잡으므로, 탐침도 같은 옵션이어야 다음 워커가 웹 없이 도는 일이 없다.
+        import socket
+        srv = socket.socket()
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+        cli = socket.create_connection(("127.0.0.1", port))
+        conn, _ = srv.accept()
+        conn.close()                                     # 서버 쪽이 먼저 닫는다 -> 서버 포트가 TIME_WAIT
+        srv.close()
+        time.sleep(0.05)
+        cli.close()
+        served = []
+        ok = pwc.start_web("W", "127.0.0.1", port, app_factory=lambda w: w,
+                           serve=lambda *a: served.append(a))
+        self.assertTrue(ok)
+        for _ in range(100):
+            if served:
+                break
+            time.sleep(0.01)
+        self.assertEqual(len(served), 1)
+
+    def test_start_web_returns_false_when_app_factory_raises(self):
+        import socket
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        served = []
+        ok = pwc.start_web("W", "127.0.0.1", port, app_factory=lambda w: (_ for _ in ()).throw(RuntimeError("boom")),
+                           serve=lambda *a: served.append(a))
+        self.assertFalse(ok)
+        self.assertEqual(served, [])
+
+
+if __name__ == "__main__":
+    unittest.main()
