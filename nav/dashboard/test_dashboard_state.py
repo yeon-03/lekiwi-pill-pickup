@@ -100,3 +100,24 @@ def test_stop_latch_flows_through_state():
     assert snap["pick"] == {"reachable": True, "status": {"state": "SEARCH"}, "age": 1.5}
     s.release_stop()
     assert s.snapshot(9.0)["stop"]["latched"] is False
+
+
+def test_snapshot_lists_are_copies():
+    s = DashboardState(INFO)
+    xy_plan = [[1.0, 2.0]]
+    s.on_plan(xy_plan, 1.0)
+    xy_plan[0][0] = 99.0
+    snap = s.snapshot(2.0)
+    assert snap["plan"]["pts"] == [[1.0, 2.0]]
+    snap["plan"]["pts"][0][0] = 55.0
+    snap["plan"]["pts"].append([0, 0])
+    assert s.snapshot(3.0)["plan"]["pts"] == [[1.0, 2.0]]
+
+    xy_particles = [[3.0, 4.0]]
+    s.on_particles(xy_particles, 1.0)
+    xy_particles[0][0] = 99.0
+    snap = s.snapshot(2.0)
+    assert snap["particles"]["pts"] == [[3.0, 4.0]]
+    snap["particles"]["pts"][0][0] = 55.0
+    snap["particles"]["pts"].append([0, 0])
+    assert s.snapshot(3.0)["particles"]["pts"] == [[3.0, 4.0]]

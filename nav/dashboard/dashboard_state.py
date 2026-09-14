@@ -79,7 +79,7 @@ class DashboardState:
 
     def on_particles(self, xy: list[list[float]], now: float) -> None:
         with self._lock:
-            self._particles = (decimate(xy, self.max_particles), len(xy), now)
+            self._particles = ([list(p) for p in decimate(xy, self.max_particles)], len(xy), now)
             self.topics.record("/particle_cloud", now, f"{len(xy)}개")
 
     def on_amcl_pose(self, x: float, y: float, cov_xy: float, now: float) -> None:
@@ -89,7 +89,7 @@ class DashboardState:
 
     def on_plan(self, xy: list[list[float]], now: float) -> None:
         with self._lock:
-            self._plan = (xy, now)
+            self._plan = ([list(p) for p in xy], now)
             self.topics.record("/plan", now, f"{len(xy)}점")
 
     def on_map_msg(self, width, height, resolution, origin_x, origin_y, now: float) -> None:
@@ -163,14 +163,14 @@ class DashboardState:
             return {
                 "t": now,
                 "pose": pose,
-                "scan": {"pts": self._scan[0], "age": _age(now, self._scan[1])} if self._scan
+                "scan": {"pts": [list(p) for p in self._scan[0]], "age": _age(now, self._scan[1])} if self._scan
                         else {"pts": [], "age": None},
-                "particles": {"pts": self._particles[0], "n": self._particles[1],
+                "particles": {"pts": [list(p) for p in self._particles[0]], "n": self._particles[1],
                               "age": _age(now, self._particles[2])} if self._particles
                              else {"pts": [], "n": 0, "age": None},
-                "plan": {"pts": self._plan[0], "age": _age(now, self._plan[1])} if self._plan
+                "plan": {"pts": [list(p) for p in self._plan[0]], "age": _age(now, self._plan[1])} if self._plan
                         else {"pts": [], "age": None},
-                "trail": list(self._trail),
+                "trail": [list(p) for p in self._trail],
                 "mission": self.timeline.snapshot(now),
                 "stop": self.latch.snapshot(),
                 "pick": {"reachable": reachable, "status": status, "age": _age(now, pick_t) if reachable else None},
