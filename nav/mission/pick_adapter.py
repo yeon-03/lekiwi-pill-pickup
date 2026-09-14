@@ -50,6 +50,7 @@ import sys
 import tempfile
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import rclpy
@@ -102,6 +103,7 @@ class PickAdapter(Node):
         self.python = python
         self.extra = extra
         self.busy = False
+        self.last_result = None     # 화면 페이지용: 지난 집기 {ok, why, at}
         self.done_q = queue.Queue()
 
         cbg = MutuallyExclusiveCallbackGroup()
@@ -239,6 +241,7 @@ class PickAdapter(Node):
         except queue.Empty:
             return
         self.busy = False
+        self.last_result = {"ok": ok, "why": why, "at": time.strftime("%H:%M:%S")}
         self.pub.publish(Bool(data=ok))
         # rclpy 는 로그를 부르는 코드 위치마다 처음 쓴 심각도를 기억하고, 같은 위치에서 다른
         # 심각도가 오면 ValueError 를 낸다. 예전엔 info/warn 을 한 줄에서 골라 불러서, 한
@@ -252,6 +255,74 @@ class PickAdapter(Node):
                 self.get_logger().warning(f"pick_done={ok}  {why}")
         except Exception as e:
             print(f"[pick_adapter] 로그 실패({e}): pick_done={ok}  {why}", flush=True)
+
+
+# ── 집기 카메라 화면 페이지 (항상 떠 있음) ────────────────────────────────────
+# 영상·워커 상태는 집는 동안에만 워커(pick_worker_cycle --view-port)가 보낸다. 워커 서버만 두면
+# 집기 전후에는 페이지 자체가 안 열려서 새로고침할 수 없었다 (2026-09-14). 그래서 페이지는 항상
+# 떠 있는 어댑터가 주고, 영상은 페이지가 워커 포트에서 직접 받는다(이미지는 다른 포트여도 된다).
+VIEW_PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>르키위 집기 화면</title>
+<style>body{margin:0;padding:12px;background:#111;color:#eee;font-family:sans-serif}
+.row{display:flex;flex-wrap:wrap;gap:8px}.cam{flex:1 1 480px;max-width:100%}
+.cam img{width:100%;background:#222;min-height:240px;display:block}#st{margin:8px 0;font-size:15px}</style></head>
+<body><div id="st">연결 중…</div><div class="row">
+<div class="cam"><div>front</div><img id="front" alt="front"></div>
+<div class="cam"><div>wrist</div><img id="wrist" alt="wrist"></div></div>
+<script>
+const W = location.protocol + '//' + location.hostname + ':__WORKER_PORT__';
+const STREAMS = ['front', 'wrist']; const st = document.getElementById('st'); let up = false;
+function load(v){ document.getElementById(v).src = W + '/stream/' + v + '?t=' + Date.now(); }
+function clear(v){ document.getElementById(v).removeAttribute('src'); }
+function fmt(s){ return s.state + ' · 시도 ' + s.pick_attempts + '/' + s.max_pick_attempts
+  + ' · 재시도 ' + s.retries + '/' + s.max_retries + (s.target_class ? ' · 목표 ' + s.target_class : ''); }
+async function poll(){
+  let ok = false;
+  try { const r = await fetch(W + '/status', {cache: 'no-store'}); const s = await r.json();
+        ok = true; st.textContent = '집는 중: ' + fmt(s); }
+  catch (e) {
+    try { const a = await (await fetch('/adapter_status', {cache: 'no-store'})).json();
+          st.textContent = a.busy ? '집기 준비 중… (워커가 로봇에 연결하는 중)'
+            : '대기 중 — 집기가 시작되면 화면이 자동으로 떠요'
+              + (a.last ? ' (지난 결과: ' + (a.last.ok ? '성공' : '실패') + ' · ' + a.last.why + ' · ' + a.last.at + ')' : ''); }
+    catch (e2) { st.textContent = '어댑터 응답 없음'; }
+  }
+  if (ok && !up) STREAMS.forEach(load);
+  if (!ok && up) STREAMS.forEach(clear);
+  up = ok; setTimeout(poll, 1000);
+}
+poll();
+</script></body></html>"""
+
+
+def start_view_page(node, port, worker_port, host="0.0.0.0"):
+    """카메라 화면 페이지와 /adapter_status 를 주는 보기 전용 HTTP 서버. 돌려준 서버는 shutdown() 으로 끈다."""
+    page = VIEW_PAGE.replace("__WORKER_PORT__", str(worker_port)).encode("utf-8")
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def _send(self, code, ctype, body):
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            path = self.path.split("?", 1)[0]
+            if path == "/":
+                return self._send(200, "text/html; charset=utf-8", page)
+            if path == "/adapter_status":
+                body = json.dumps({"busy": node.busy, "last": node.last_result}, ensure_ascii=False)
+                return self._send(200, "application/json; charset=utf-8", body.encode("utf-8"))
+            return self._send(404, "text/plain; charset=utf-8", "없음".encode("utf-8"))
+
+    srv = ThreadingHTTPServer((host, port), Handler)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
 
 
 def parse_map(s):
@@ -280,6 +351,11 @@ def main():
     ap.add_argument("--run-log-dir", default="~/pickplace_logs/pick_runs",
                     help="실행마다 집기 스크립트 출력을 <시각>_<색>.log 로 실시간 기록할 폴더. "
                          "빈 값이면 남기지 않는다")
+    ap.add_argument("--view-page-port", type=int, default=0,
+                    help="0 이 아니면 이 포트에 집기 카메라 화면 페이지를 항상 띄운다. 영상·워커 상태는 "
+                         "집는 동안 워커가 --worker-view-port 로 보낸다 (pick_worker_cycle 일 때 자동으로 넘김)")
+    ap.add_argument("--worker-view-port", type=int, default=8011,
+                    help="집기 워커의 화면 서버 포트 (--view-page-port 를 쓸 때)")
     ap.add_argument("--timeout", type=float, default=150.0,
                     help="집기 제한시간(초). 로봇 쪽 --pick-timeout(기본 180초)보다 "
                          "짧게 둘 것 -- 그래야 로봇이 먼저 포기하지 않고 "
@@ -340,15 +416,28 @@ def main():
               "집기가 바로 실패한다 (시험용 가짜 pick_cycle 이면 무시)", file=sys.stderr)
 
     rclpy.init()
-    node = PickAdapter(a.repo, mapping, a.timeout, python, pick_opts + list(a.pick_args),
+    extra = pick_opts + list(a.pick_args)
+    if a.view_page_port and "pick_worker_cycle" in a.pick_script and "--view-port" not in extra:
+        extra += ["--view-port", str(a.worker_view_port)]
+    node = PickAdapter(a.repo, mapping, a.timeout, python, extra,
                        a.pick_script, run_log_dir=a.run_log_dir or None)
     ex = MultiThreadedExecutor(num_threads=2)
     ex.add_node(node)
+    page = None
+    if a.view_page_port:
+        try:
+            page = start_view_page(node, a.view_page_port, a.worker_view_port)
+            node.get_logger().info(f"집기 카메라 화면: http://localhost:{a.view_page_port} (항상 열림)")
+        except OSError as e:               # 포트가 막히면 화면만 포기
+            node.get_logger().warning(f"화면 페이지를 못 띄움 ({e}) -- 집기는 계속")
     try:
         ex.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        if page is not None:
+            page.shutdown()
+            page.server_close()
         node.destroy_node()
         # SIGTERM/SIGINT 로 끝나면 rclpy 가 이미 컨텍스트를 내렸다 -- 두 번 부르면 RCLError.
         if rclpy.ok():

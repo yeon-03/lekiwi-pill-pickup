@@ -103,10 +103,13 @@ def stub_repo(script="pick_cycle.py"):
 def start_adapter(repo, mode, timeout, stub_sec="0.3", extra=()):
     env = dict(os.environ, STUB_MODE=mode, STUB_SEC=stub_sec,
                ROS_DOMAIN_ID=DOMAIN, **LOCAL_ONLY)
+    # 실행 로그는 임시 폴더로 -- 기본값(~/pickplace_logs/pick_runs)에 가짜 로그가 섞이지 않게.
+    # extra 에 --run-log-dir 가 있으면 뒤에 오는 값이 이긴다.
     return subprocess.Popen(
         [sys.executable, str(ADAPTER), "--repo", str(repo),
          "--map", "center=green,left=red", "--timeout", str(timeout),
-         "--python", sys.executable, *extra],
+         "--python", sys.executable,
+         "--run-log-dir", tempfile.mkdtemp(prefix="pickruns_"), *extra],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
 
@@ -318,6 +321,51 @@ def case_success_then_failure():
     return ok
 
 
+def case_view_page_always_on():
+    """--view-page-port 를 주면 집기 전에도 카메라 화면 페이지가 열리고, 집기 워커에
+    --view-port <worker-view-port> 가 붙어야 한다 (영상은 집는 동안 워커가 보낸다)."""
+    import socket
+    import urllib.request
+    name = "집기 전에도 화면 페이지 열림 + 워커에 --view-port 전달"
+    with socket.socket() as sk:
+        sk.bind(("127.0.0.1", 0))
+        port = sk.getsockname()[1]
+    Path(RESULT).unlink(missing_ok=True)
+    proc = start_adapter(stub_repo("pick_worker_cycle.py"), "ok", 8,
+                         extra=("--pick-script", "scripts/pick_worker_cycle.py",
+                                "--view-page-port", str(port), "--worker-view-port", "18011"))
+    body, status, got, out = "", None, None, ""
+    try:
+        t0 = time.time()
+        while time.time() - t0 < 10:
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2) as r:
+                    body = r.read().decode("utf-8")
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/adapter_status", timeout=2) as r:
+                    status = json.loads(r.read())
+                break
+            except OSError:
+                time.sleep(0.3)
+        h = Harness()
+        if h.wait_adapter():
+            h.pub.publish(String(data="center:green"))
+            t0 = time.time()
+            while not h.got and time.time() - t0 < 15.0:
+                rclpy.spin_once(h, timeout_sec=0.1)
+            got = h.got[0] if h.got else None
+        h.destroy_node()
+    finally:
+        out = stop(proc)
+    ok = ("__WORKER_PORT__" not in body and "':18011'" in body
+          and status is not None and status.get("busy") is False
+          and got is True and "--view-port 18011" in out)
+    print(f"  [{'PASS' if ok else 'FAIL'}] {name}: 페이지={'열림' if body else '안 열림'} "
+          f"대기상태={status} pick_done={got}")
+    if not ok:
+        show(out)
+    return ok
+
+
 def main():
     if not ADAPTER.is_file():
         print(f"pick_adapter.py 를 찾지 못했다: {ADAPTER}")
@@ -342,6 +390,7 @@ def main():
             case_no_color_in_request_falls_back_to_map(),
             case_pick_script_option(),
             case_success_then_failure(),
+            case_view_page_always_on(),
         ]
     finally:
         rclpy.shutdown()

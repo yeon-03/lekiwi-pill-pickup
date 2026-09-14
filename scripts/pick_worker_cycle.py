@@ -238,6 +238,8 @@ def start_view_server(worker, port: int, host: str = "0.0.0.0", fps: float = 15.
         def _send(self, code, ctype, body):
             self.send_response(code)
             self.send_header("Content-Type", ctype)
+            # 항상 떠 있는 어댑터 페이지(다른 포트)가 /status 를 읽을 수 있게 한다.
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)

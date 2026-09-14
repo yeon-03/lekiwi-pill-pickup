@@ -160,6 +160,11 @@ class TestViewServer(unittest.TestCase):
         ctype, body = self.get("/status")
         self.assertEqual(json.loads(body)["state"], "SERVO")
 
+    def test_status_allows_page_on_other_port(self):
+        import urllib.request
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/status", timeout=5) as r:
+            self.assertEqual(r.headers.get("Access-Control-Allow-Origin"), "*")
+
     def test_stream_sends_worker_frames(self):
         ctype, chunk = self.get("/stream/wrist", n=200)
         self.assertIn("multipart/x-mixed-replace", ctype)
