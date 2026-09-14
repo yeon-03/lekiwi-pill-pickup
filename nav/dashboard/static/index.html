@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LeKiwi 관제</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="console">
+  <header class="strip">
+    <span class="brand">LeKiwi 01</span>
+    <span class="chip" id="conn"><i class="dot"></i><span>연결 중…</span></span>
+    <span class="chip state" id="mission-chip">대기</span>
+    <span class="chip" id="target">목표 없음</span>
+    <span class="chip mono" id="elapsed">–</span>
+    <span class="spacer"></span>
+    <button class="btn" id="font-down" type="button" aria-label="글자 작게">가−</button>
+    <button class="btn" id="font-up" type="button" aria-label="글자 크게">가+</button>
+    <span class="estop-note">확실한 비상정지는 로봇 전원 스위치</span>
+    <button class="estop" id="stop-btn" type="button">정지</button>
+  </header>
+
+  <div class="banner danger" id="latch-banner" hidden>
+    <span>정지 유지 중 — 로봇이 움직이려 하면 계속 멈춥니다</span>
+    <span class="mono" id="latch-info"></span>
+    <button class="btn" id="release-btn" type="button">해제</button>
+  </div>
+  <div class="banner warn" id="warn-banner" hidden></div>
+
+  <main class="body">
+    <section class="col">
+      <div class="pane">
+        <div class="pane-title"><span>지도</span><span class="mono" id="pose-info">위치 없음</span></div>
+        <div class="map-box"><canvas id="map" aria-label="Nav2 지도"></canvas></div>
+        <div class="legend" id="legend"></div>
+      </div>
+      <div class="pane">
+        <div class="pane-title"><span>미션 단계</span></div>
+        <ol class="steps" id="stages"></ol>
+        <p class="status-text" id="status-text"></p>
+      </div>
+    </section>
+
+    <section class="col">
+      <div class="pane">
+        <div class="pane-title"><span>YOLO 카메라</span><span class="mono">front · wrist</span></div>
+        <figure class="cam" id="cam-front" data-view="front">
+          <img alt="front 카메라">
+          <figcaption class="cam-label"><span>front</span><span class="cam-meta"></span></figcaption>
+          <div class="cam-bar"></div>
+          <div class="cam-empty">집기 단계에서 켜져요</div>
+        </figure>
+        <figure class="cam" id="cam-wrist" data-view="wrist">
+          <img alt="wrist 카메라">
+          <figcaption class="cam-label"><span>wrist</span><span class="cam-meta"></span></figcaption>
+          <div class="cam-bar"></div>
+          <div class="cam-empty">집기 단계에서 켜져요</div>
+        </figure>
+      </div>
+    </section>
+  </main>
+
+  <section class="pane">
+    <div class="pane-title"><span>토픽 · 입력 / 출력</span><span class="mono">노트북이 받은 시각 기준</span></div>
+    <div class="io" id="topics"></div>
+  </section>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>

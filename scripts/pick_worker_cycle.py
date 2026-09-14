@@ -43,6 +43,7 @@ import argparse
 import json
 import os
 import signal
+import socket
 import sys
 import threading
 import time
@@ -103,6 +104,10 @@ def parse_args(argv=None):
                     help="0 이 아니면 집는 동안 워커가 그린 front/wrist 화면(십자선·검출·정렬 숫자)을 "
                          "http://<노트북>:<포트> 로 보여준다 (보기 전용). 로봇 호스트는 클라이언트를 "
                          "하나만 받으므로 웹 시연 UI 를 따로 켤 수 없을 때 쓴다")
+    ap.add_argument("--web-port", type=int, default=None,
+                    help="지정하면 집기 동안 카메라 스트림·상태 웹(motion/webui)을 이 포트로 띄운다")
+    ap.add_argument("--web-host", default="127.0.0.1",
+                    help="웹 바인드 주소. 다른 기기에서 볼 때만 0.0.0.0 (8000 에는 시작·재시작 버튼도 열린다)")
     return ap.parse_args(argv)
 
 
@@ -195,6 +200,32 @@ def run_cycle(worker, *, max_seconds: float, target_class: str | None = None,
         worker.join(timeout=join_timeout_s)
     return {"success": success, "grasped": grasped, "verdict_reason": why,
             "elapsed_sec": round(clock() - t0, 1), "last_state": last.get("state")}
+
+
+def start_web(worker, host: str, port: int, app_factory=None, serve=None) -> bool:
+    """카메라 스트림 웹을 데몬 스레드로 띄운다. 실패해도 집기는 계속한다 -- 표시 실패가 미션 실패가 되면 안 된다."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        # uvicorn 과 같은 SO_REUSEADDR -- 없으면 직전 워커 연결이 남긴 TIME_WAIT 에 막혀 웹 없이 돈다.
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind((host, port))
+        except OSError as exc:
+            print(f"[pick_worker_cycle] 경고: 웹 포트 {host}:{port} 사용 불가 ({exc}) -- 카메라 스트림 없이 계속")
+            return False
+    try:
+        if app_factory is None:
+            from webui.app import create_app as app_factory
+        if serve is None:
+            def serve(app, host, port):
+                import uvicorn
+                uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning")).run()
+        app = app_factory(worker)
+        threading.Thread(target=serve, args=(app, host, port), daemon=True, name="pick-web").start()
+        print(f"[pick_worker_cycle] 카메라 스트림 http://{host}:{port}/stream/front")
+        return True
+    except Exception as exc:
+        print(f"[pick_worker_cycle] 경고: 웹 시작 실패 ({exc}) -- 카메라 스트림 없이 계속")
+        return False
 
 
 def write_result(path: str, **fields) -> None:
@@ -351,6 +382,8 @@ def main(argv=None) -> int:
             infer_fn=make_infer(infer, spec, args.min_color_ratio),
             load_model_fn=lambda _cfg: model,   # 이미 올린 모델을 재사용
         )
+        if args.web_port:
+            start_web(worker, args.web_host, args.web_port)
         view = None
         if args.view_port:
             try:
