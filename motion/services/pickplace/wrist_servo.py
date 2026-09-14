@@ -17,6 +17,8 @@ from services.pickplace import PickPlaceError
 from services.pickplace.yolo_detect import Detection
 
 GRIPPER_JOINT = "arm_gripper.pos"
+# 재시도 때 더 내릴 높이 관절 (pan 은 제외 — 옆으로 밀리지 않게)
+DEPTH_JOINTS = ("arm_shoulder_lift.pos", "arm_elbow_flex.pos")
 
 
 @dataclass
@@ -35,7 +37,8 @@ class GraspArgs:
     # 박스 중심 x 가 (화면 폭 × 이 비율) 보다 왼쪽이면 '그리퍼 쪽' 으로 보고 left_min_conf 이상만 인정한다.
     # 손목 카메라 왼쪽에 보이는 보라색 그리퍼 손가락이 가끔 큐브로 잡히기 때문
     left_region_ratio: float = 0.5
-    left_min_conf: float = 0.85
+    # 2026-09-13 실기기: 0.85 는 진짜 약통도 자주 걸러냈다 — 0.5 에서 그리퍼 오검출 없이 잘 잡힘
+    left_min_conf: float = 0.5
 
     # --- 1. 그리퍼 ---
 
@@ -62,9 +65,10 @@ class GraspArgs:
     #   큐브가 가까워지면 박스 아래 변이 화면 밖으로 잘리므로 중심보다 위 변이 믿을 만하다.
     #   단, 병처럼 위쪽(뚜껑)과 아래쪽(몸통)의 잡히는 느낌이 다른 물체는 bottom 으로 몸통 쪽을
     #   노리는 게 나을 수 있다 (2026-09-13 사용자 피드백: 위쪽을 잡으면 뚜껑이라 안 잡힘).
-    y_anchor: str = "inside"
+    # 기본 center + 25px: 2026-09-13 실기기에서 약통을 가장 안정적으로 잡은 값
+    y_anchor: str = "center"
     # [top/center] 기준 y 의 목표 (화면 중심 y 로부터 px, 위가 음수)
-    y_target_dy: int = 0
+    y_target_dy: int = 25
     # [top/center] 기준 y 가 목표에서 이 픽셀 안이면 세로 정렬된 것으로 본다
     y_tolerance_px: int = 40
     # 집기 직전 '완벽한' 화면 구성을 저장한 참조 파일. 있으면 x_anchor/x_target_dx/y_anchor/y_target_dy/
@@ -93,8 +97,8 @@ class GraspArgs:
     reach_joints: dict[str, float] = field(default_factory=dict)
     # [joints] 최대 누적 시간(초) — 이 이상 뻗지 않는다
     max_reach_s: float = 6.0
-    # 이 크기(px)가 되면 READY (손목 뷰 640 기준)
-    target_size_px: int = 260
+    # 이 크기(px)가 되면 READY (손목 뷰 640 기준). 290 = 2026-09-13 실기기 약통 기준
+    target_size_px: int = 290
     size_metric: str = "width"
     # 크기가 목표 - 이 값 이상이면 "도달"로 본다
     size_tolerance_px: int = 20
@@ -118,11 +122,17 @@ class GraspArgs:
     # 접근부터 다시 한다. 전체 pick 시도는 이 횟수까지 (첫 시도 포함)
     max_pick_attempts: int = 5
     pick_retry_wait_s: float = 3.0
-    # 재시도마다 손목 뷰 목표 크기를 이만큼 키운다 (더 가까이)
-    retry_size_step_px: int = 30
+    # 재시도마다 손목 뷰 목표 크기를 이만큼 키운다 (더 가까이). 기본 0 — 재시도는 retry_depth 로 높이만 내린다
+    retry_size_step_px: int = 0
     # [pose 모드] 재시도마다 pick→grasp 경로를 이 비율만큼 더 넘어갈 수 있게 한다 (0.15 = 15퍼센트 더 뻗음)
     # [joints 모드] max_reach_s 의 이 비율만큼 더 누적할 수 있다
-    retry_overreach: float = 0.15
+    # 기본 0: 경로 전체(pan 포함)를 늘리면 재시도할수록 옆(왼쪽)으로 밀렸다 (2026-09-13). 높이는 retry_depth_* 가 담당
+    retry_overreach: float = 0.0
+    # [pose 모드] 재시도마다 높이 관절(shoulder_lift/elbow_flex)만 pick→grasp 경로의 이 비율만큼 더 내린다.
+    # retry_overreach 는 경로 전체(pan 포함)를 늘려 재시도할수록 옆으로 밀렸다 (2026-09-13) — 이건 높이만 건드린다.
+    retry_depth_step: float = 0.02
+    # 재시도로 더 내리는 총량 상한 (경로 비율). 바닥에 박지 않게 하는 안전 한계
+    retry_depth_max: float = 0.06
 
     # --- 4. 집기: READY 후 그리퍼 닫기 ---
 
@@ -222,6 +232,8 @@ class GraspArgs:
             raise PickPlaceError("error: grasp.y_tolerance_px / size_tolerance_px / refine_timeout_s 는 0 이상이어야 합니다")
         if self.front_hint_win_px <= 0 or not 0.0 < self.front_hint_min_ratio <= 1.0:
             raise PickPlaceError("error: grasp.front_hint_win_px 는 0 보다, front_hint_min_ratio 는 0~1 사이여야 합니다")
+        if self.retry_depth_step < 0 or self.retry_depth_max < 0:
+            raise PickPlaceError("error: grasp.retry_depth_step / retry_depth_max 는 0 이상이어야 합니다")
         if self.max_retries < 0 or self.retry_size_step_px < 0 or self.retry_overreach < 0:
             raise PickPlaceError("error: grasp.max_retries / retry_size_step_px / retry_overreach 는 0 이상이어야 합니다")
         if self.max_pick_attempts < 1 or self.pick_retry_wait_s < 0:
@@ -329,6 +341,8 @@ class WristServo:
         self.attempt = 0  # 0 = 첫 시도, 재시도마다 +1
         self.just_ready = False
         self._last_x_ok = False  # 손목 박스가 사라지기 직전 마지막으로 본 x_ok
+        self.retry_depth = 0.0  # 재시도로 더 내린 양 (pick→grasp 경로 비율, 높이 관절만)
+        self._depth_pending = False  # 더 내리는 중 — 다 내려가기 전엔 다시 집지 않는다
 
     @property
     def done(self) -> bool:
@@ -336,6 +350,10 @@ class WristServo:
 
     def _compose(self) -> dict[str, float]:
         pose = {k: self.start[k] + self.reach[k] * self.progress for k in self.start}
+        if self.cfg.approach_mode == "pose" and self.retry_depth > 0:
+            for k in DEPTH_JOINTS:
+                if k in pose:
+                    pose[k] += self.reach[k] * self.retry_depth
         if self.cfg.pan_joint in pose:
             pose[self.cfg.pan_joint] += self.pan_delta
         if self.cfg.tilt_joint in pose:
@@ -363,6 +381,11 @@ class WristServo:
             self.max_progress += self.cfg.retry_overreach
         else:
             self.max_progress += self.cfg.retry_overreach * self.cfg.max_reach_s
+        if self.cfg.approach_mode == "pose":
+            new_depth = min(self.retry_depth + self.cfg.retry_depth_step, self.cfg.retry_depth_max)
+            if new_depth > self.retry_depth:
+                self.retry_depth = new_depth
+                self._depth_pending = True
         self.state = "CENTERING"
         self.ready_forced = False
         self.ready_by_hint = False
@@ -382,6 +405,16 @@ class WristServo:
         재시도는 '그 높이에서 실패했으니 더 내려가자' 이므로 힌트를 무시하고 키운 목표 크기까지 간다."""
         self.just_ready = False
         if self.state == "READY":
+            return self.current
+
+        if self._depth_pending and allow_motion:
+            # 재시도: 크기가 이미 목표에 도달해 있으면 곧바로 READY 가 되어 같은 높이에서 또 닫게 된다.
+            # 더 내린 자세에 실제로 도착할 때까지는 판정하지 않고 내려가기만 한다.
+            target = self._compose()
+            self.current = self._limit_speed(target, dt)
+            if all(abs(self.current[j] - target[j]) < 0.5 for j in DEPTH_JOINTS if j in target):
+                self._depth_pending = False
+            self.state = "APPROACHING"
             return self.current
 
         h, w = frame_shape[:2]
