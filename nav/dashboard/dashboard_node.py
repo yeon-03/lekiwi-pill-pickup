@@ -51,15 +51,18 @@ def main(argv=None) -> int:
     on_stop, on_release, on_tick, on_pick_update = make_stop_handlers(state, pick, node.publish_stop)
     node.create_timer(0.1, on_tick)
     pick.start(on_pick_update)
-    threading.Thread(target=rclpy.spin, args=(node,), daemon=True, name="ros-spin").start()
+    spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True, name="ros-spin")
+    spin_thread.start()
 
     app = create_app(state, map_png_bytes(info), meta, on_stop, on_release)
     print(f"[dashboard] http://{args.host}:{args.port}  지도 {Path(args.map).name}  집기 {args.pick_url}", flush=True)
     try:
         uvicorn.run(app, host=args.host, port=args.port, log_level="warning", timeout_graceful_shutdown=2)
     finally:
+        if rclpy.ok():
+            rclpy.shutdown()
+        spin_thread.join(timeout=2.0)
         node.destroy_node()
-        rclpy.shutdown()
     return 0
 
 
