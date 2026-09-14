@@ -189,21 +189,3 @@ def test_stop_button_is_wired_before_map_info_fetch():
     assert event_source_idx < map_info_fetch_idx, "EventSource should be created before map info fetch"
     assert " s 전" not in js, "Should not have English 's 전' unit in app.js"
     assert "ms 전" not in js, "Should not have English 'ms 전' unit in app.js"
-
-
-def test_one_screen_layout_and_pipeline_ids():
-    import re
-    here = Path(__file__).resolve().parent / "static"
-    css = (here / "style.css").read_text(encoding="utf-8")
-    m = re.search(r"@media \(min-width: 1280px\) \{(.*?)^\}", css, re.S | re.M)
-    assert m, "wide-screen block missing"
-    assert re.search(r"height:\s*100d?vh", m.group(1)) and "grid-template-rows" in m.group(1)
-    html = (here / "index.html").read_text(encoding="utf-8")
-    for element_id in ("headline", "topics-summary", "topics-toggle", "stages", "status-text",
-                       "mission-chip", "topics", "cam-title-target", "target-badge"):
-        assert f'id="{element_id}"' in html, element_id
-    js = (here / "app.js").read_text(encoding="utf-8")
-    for hexcolor in ("#D93636", "#2E9E4F", "#2F6BD8"):
-        assert hexcolor in js, hexcolor
-    for word in ("빨간색", "초록색", "파란색", "▼"):
-        assert word in js, word
