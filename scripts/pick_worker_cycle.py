@@ -189,6 +189,8 @@ def run_cycle(worker, *, max_seconds: float, target_class: str | None = None,
 def start_web(worker, host: str, port: int, app_factory=None, serve=None) -> bool:
     """카메라 스트림 웹을 데몬 스레드로 띄운다. 실패해도 집기는 계속한다 -- 표시 실패가 미션 실패가 되면 안 된다."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        # uvicorn 과 같은 SO_REUSEADDR -- 없으면 직전 워커 연결이 남긴 TIME_WAIT 에 막혀 웹 없이 돈다.
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             probe.bind((host, port))
         except OSError as exc:
