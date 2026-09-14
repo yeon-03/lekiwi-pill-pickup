@@ -92,7 +92,8 @@
 | `stop_latch.py` | 정지 유지 판단: 지금 `stop` 을 보낼지·워커 estop 을 부를지 (시각·브리지 상태 입력) | 없음 |
 | `dashboard_state.py` | 위 넷을 묶은 스레드 안전 상태, `snapshot(now)` → JSON dict | 위 넷 |
 | `ros_listener.py` | rclpy 노드: 구독 → `dashboard_state` 갱신, 0.1 s 타이머로 `stop_latch` 결과대로 `/abo/command "stop"` 발행 | rclpy, 메시지 타입 |
-| `web_app.py` | FastAPI 앱 팩토리 `create_app(state, map_png, pick_client)` | fastapi |
+| `web_app.py` | FastAPI 앱 팩토리 `create_app(state, map_png, map_meta, on_stop, on_release)`, 정지 핸들러 `make_stop_handlers` | fastapi |
+| `pick_client.py` | 집기 워커(:8000) `/status` 폴링 스레드와 `/estop` 호출 (거부면 "estop 불가 (8000 응답 없음)") | 표준 라이브러리 |
 | `dashboard_node.py` | 진입점: 인자 파싱, rclpy 스핀 스레드 + uvicorn | 위 전부 |
 | `static/index.html`, `static/app.js`, `static/style.css` | A안 화면, canvas 그리기, SSE 수신 | 없음 (CDN 불사용) |
 | `run_dashboard.sh` | 환경변수(ROS_DOMAIN_ID=42 등) 고정 후 실행 | |
@@ -135,7 +136,8 @@
   "trail":     [[x, y], ...],
   "mission":   {"state": "moving", "status": "가는 중이에요. 0.8 m 남았어요.",
                 "command": "fetch center color:green", "elapsed": 31.0,
-                "stages": [{"key": "drive", "label": "Nav2 주행 home → center", "state": "active", "sec": 31.0}, ...]},
+                "stages": [{"key": "drive", "label": "Nav2 주행 home → center", "state": "active", "sec": 31.0}, ...],
+                "outcome": null},
   "stop":      {"latched": false, "since": null, "sent": 0, "last_result": null},
   "pick":      {"reachable": true, "status": {...워커 /status 그대로...}, "age": 0.2},
   "topics":    {"/scan": {"dir": "in", "rate": 6.0, "age": 0.15, "last": "720빔 · 유효 407"}, ...},
@@ -149,10 +151,15 @@
 | 단계 | 시작 조건 | 끝 조건 |
 |---|---|---|
 | Nav2 주행 home → 목적지 | fetch 명령 후 첫 `moving` | `arrived` 또는 `picking` |
-| 집기 (호스트 기동 포함) | `picking` | `returning` 또는 `failed` |
+| 집기 (호스트 기동 포함) | `picking` | `/abo/pick_done` (true 면 완료, false 면 실패), 못 받았으면 `returning`(완료로 간주) 또는 `failed` |
 | 복귀 목적지 → home | `returning` | `done` / `failed` |
 
-`rejected`/`canceled`/`failed` 는 진행 중 단계를 실패로 표시하고 `/abo/status` 문장을 그대로 보여준다.
+브리지는 집기 실패·집기 시간초과에도 `returning` 으로 복귀한 뒤 `failed`("돌아왔어요. 물건은 집지 못했어요.")로 끝낸다.
+그래서 집기가 실패(`pick_done false`)한 미션의 복귀 중 `failed` 는 **복귀 완료** + 미션 결과(`outcome`) `failed` 로 표시한다.
+`done` 은 진행 중 단계 완료 + `outcome` `done`. 그 밖의 `rejected`/`canceled`/`failed` 는 진행 중 단계를 실패로 표시하고
+`outcome` `failed`, `/abo/status` 문장을 그대로 보여준다.
+미션 진행 중(시작됐고 안 끝남) 받은 fetch 는 단계·목표를 초기화하지 않고 `command` 만 기록한다(브리지는 같은 fetch 는 무시,
+다른 fetch 는 `rejected` 로 답한다). 이미 단계가 시작된 미션에 온 `rejected` 는 그 새 fetch 에 대한 답이므로 미션을 끝내지 않는다.
 브리지는 위치 다듬기를 별도 state 로 내지 않으므로 단계로 나누지 않는다(문장에만 나온다).
 정지 유지 중 브리지가 내는 `idle`("가고 있지 않아요")은 대시보드가 보낸 `stop` 의 응답이므로 단계를 바꾸지 않는다.
 
@@ -190,7 +197,8 @@
 `POST /api/stop` → 정지 유지 켜짐. `POST /api/stop/release` 로만 풀린다 (새 fetch 명령을 받아도 자동으로 풀지 않는다 — 풀린 줄 모르고 로봇이 움직이면 안 되므로).
 
 켜지는 순간:
-1. 집기 워커(8000)가 응답하면 `POST 127.0.0.1:8000/estop` — 팔 즉시 고정, 바퀴 정지
+1. `POST 127.0.0.1:8000/estop` 을 **늘 시도**한다(캐시된 응답 여부로 건너뛰지 않음; 거부는 즉시, 타임아웃 0.3 s) — 팔 즉시 고정, 바퀴 정지.
+   실패하면 "estop 불가 (8000 응답 없음)" / "estop 실패: …" 가 결과 문구에 남는다.
 2. `/abo/command "stop"` 1회 — 주행 중이면 여기서 바로 멈춘다
 
 켜져 있는 동안 (0.1 s 타이머, `stop_latch.py` 가 판단):
@@ -201,6 +209,12 @@
 
 한계 (화면·문서에 그대로 적는다): 복귀 주행이 **시작된 뒤에** 취소되므로 수락 지연 + 최대 0.5 s 만큼
 로봇이 움직일 수 있다. 그래서 버튼 이름은 "비상정지"가 아니라 **"정지"**, 옆에 "확실한 비상정지는 로봇 전원 스위치"를 적는다.
+
+추가 한계:
+- 재전송 창은 브리지 `on_fb` 가 `idle` 응답 뒤에도 주행 피드백으로 `moving` 을 다시 발행해 주는 데 기대어 다시 열린다.
+  브리지를 고치다 피드백 state 발행을 없애면 재정지가 깨진다.
+- 직전 피드백 뒤 약 3 s 안에 다시 fetch 하면(피드백 state 가 바뀌지 않아 창이 늦게 열려) 재정지가 최대 3 s 늦을 수 있다.
+- 정지 유지 중 집기가 시작되면 워커 웹이 뜨고 8000 응답 상승 시점의 estop 이 닿을 때까지 팔이 움직일 수 있다.
 
 화면: 정지 유지 중엔 상단 붉은 띠 "정지 유지 중 — 로봇이 움직이려 하면 계속 멈춥니다 [해제]", 보낸 `stop` 횟수와 마지막 브리지 응답 표시.
 그 외 제어 버튼(시작·일시정지·처음 자세로)은 v1 에 두지 않는다 — 미션 중 수동 조작이 브리지 상태와 어긋나기 때문.
