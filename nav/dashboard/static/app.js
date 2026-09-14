@@ -22,7 +22,7 @@ let lastEventAt = 0;
 
 function fmtAge(a) {
   if (a == null) return "받은 적 없음";
-  return a < 1 ? `${Math.round(a * 1000)} ms 전` : `${a.toFixed(1)} s 전`;
+  return `${a < 10 ? a.toFixed(1) : Math.round(a)}초 전`;
 }
 
 function fmtSec(s) {
@@ -31,23 +31,35 @@ function fmtSec(s) {
 }
 
 async function init() {
-  meta = await (await fetch("/api/map_info")).json();
-  mapImg = new Image();
-  mapImg.onload = () => draw();
-  mapImg.src = "/map.png";
+  // Wire stop/release buttons first (safety-critical)
+  $("stop-btn").addEventListener("click", () => fetch("/api/stop", { method: "POST" }));
+  $("release-btn").addEventListener("click", () => fetch("/api/stop/release", { method: "POST" }));
+
+  // Build legend and set up layer visibility
   buildLegend();
   new ResizeObserver(() => draw()).observe($("map").parentElement);
 
+  // Connect EventSource for real-time updates
   const es = new EventSource("/api/events");
   es.onmessage = (ev) => {
     last = JSON.parse(ev.data);
     lastEventAt = performance.now();
     render(last);
   };
+
+  // Monitor connection health
   setInterval(checkConnection, 1000);
 
-  $("stop-btn").addEventListener("click", () => fetch("/api/stop", { method: "POST" }));
-  $("release-btn").addEventListener("click", () => fetch("/api/stop/release", { method: "POST" }));
+  // Load map info asynchronously (may fail, but buttons remain functional)
+  try {
+    meta = await (await fetch("/api/map_info")).json();
+    mapImg = new Image();
+    mapImg.onload = () => draw();
+    mapImg.src = "/map.png";
+  } catch (err) {
+    $("warn-banner").hidden = false;
+    $("warn-banner").textContent = `지도 정보를 불러오지 못했어요: ${err}`;
+  }
 }
 
 function checkConnection() {
@@ -91,7 +103,7 @@ function render(s) {
   const p = s.pose;
   $("pose-info").textContent = p
     ? `x ${p.x.toFixed(2)} · y ${p.y.toFixed(2)} · ${(p.yaw * 180 / Math.PI).toFixed(0)}°` +
-      (p.age > 1 ? ` · TF 끊김 ${p.age.toFixed(1)}s` : "")
+      (p.age > 1 ? ` · TF 끊김 ${p.age.toFixed(1)}초` : "")
     : "위치 없음 (TF 없음)";
 
   for (const l of LAYERS) {
@@ -99,7 +111,7 @@ function render(s) {
     if (l.key === "trail") { el.textContent = `${s.trail.length}점`; continue; }
     const age = s[l.key].age;
     if (l.key === "particles" && age != null && age > 2) {
-      el.textContent = `마지막 갱신 ${age.toFixed(0)}s 전 (정지 중엔 정상)`;
+      el.textContent = `마지막 갱신 ${Math.round(age)}초 전 (정지 중엔 정상)`;
       el.classList.remove("stale");
     } else {
       el.textContent = fmtAge(age);
@@ -131,7 +143,7 @@ function renderCams(pick) {
     const frozen = age != null && age > 2;
     fig.classList.toggle("frozen", frozen);
     fig.querySelector(".cam-meta").textContent =
-      `${st.state || ""} · ${st.hz ?? "–"} Hz` + (frozen ? ` · 카메라 멈춤 ${age.toFixed(1)}s` : "");
+      `${st.state || ""} · ${st.hz ?? "–"} Hz` + (frozen ? ` · 카메라 멈춤 ${age.toFixed(1)}초` : "");
     const bits = [];
     const pu = (st.purple || {})[view];
     if (pu) bits.push(`보라 ${pu.ratio.toFixed(2)} / ${pu.thr.toFixed(2)}${pu.ratio >= pu.thr ? " OK" : ""}`);

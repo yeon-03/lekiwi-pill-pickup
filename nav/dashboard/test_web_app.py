@@ -141,3 +141,15 @@ def test_index_has_dashboard_regions_and_assets():
     assert client.get("/static/style.css").status_code == 200
     js = client.get("/static/app.js")
     assert js.status_code == 200 and "EventSource" in js.text
+
+
+def test_stop_button_is_wired_before_map_info_fetch():
+    client = TestClient(create_app(DashboardState(INFO), b"", META, lambda: {}, lambda: {}))
+    js = client.get("/static/app.js").text
+    stop_listener_idx = js.index('$("stop-btn").addEventListener')
+    map_info_fetch_idx = js.index('fetch("/api/map_info")')
+    event_source_idx = js.index('new EventSource("/api/events")')
+    assert stop_listener_idx < map_info_fetch_idx, "stop button listener should be wired before map info fetch"
+    assert event_source_idx < map_info_fetch_idx, "EventSource should be created before map info fetch"
+    assert " s 전" not in js, "Should not have English 's 전' unit in app.js"
+    assert "ms 전" not in js, "Should not have English 'ms 전' unit in app.js"
