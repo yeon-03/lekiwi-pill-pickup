@@ -50,12 +50,38 @@ async function postAction(url, message) {
   showWarnings(last ? last.warnings : []);
 }
 
+const UI_SCALE_KEY = "lekiwi-dashboard-ui-scale";
+let uiScale = 1;
+
+function loadUiScale() {
+  try {
+    const v = parseFloat(localStorage.getItem(UI_SCALE_KEY));
+    return Number.isFinite(v) ? v : 1;
+  } catch (_) {
+    return 1;
+  }
+}
+
+function setUiScale(v, save = true) {
+  uiScale = Math.min(2, Math.max(0.8, Math.round(v * 10) / 10));
+  document.documentElement.style.setProperty("--ui-scale", String(uiScale));
+  if (save) {
+    try { localStorage.setItem(UI_SCALE_KEY, String(uiScale)); } catch (_) { /* 저장 못 해도 화면은 바뀐다 */ }
+  }
+  draw();
+}
+
 async function init() {
   // Wire stop/release buttons first (safety-critical)
   $("stop-btn").addEventListener("click", () =>
     postAction("/api/stop", (why) => `정지 요청 실패: ${why} — 로봇 전원 스위치를 사용하세요`));
   $("release-btn").addEventListener("click", () =>
     postAction("/api/stop/release", (why) => `해제 요청 실패: ${why}`));
+
+  // 글자 크기 조절 (큰 모니터에서 운영자가 맞춘다)
+  $("font-down").addEventListener("click", () => setUiScale(uiScale - 0.1));
+  $("font-up").addEventListener("click", () => setUiScale(uiScale + 0.1));
+  setUiScale(loadUiScale(), false);
 
   // Build legend and set up layer visibility
   buildLegend();
@@ -187,6 +213,7 @@ function draw() {
   const canvas = $("map");
   if (!meta || !mapImg || !mapImg.complete || !mapImg.naturalWidth) return;
   const dpr = window.devicePixelRatio || 1;
+  const ui = Math.max(1, (parseFloat(getComputedStyle(document.body).fontSize) || 19) / 19);   // 글자 크기에 맞춰 지도 표식도 키운다
   const cssW = canvas.parentElement.clientWidth;
   const cssH = cssW * meta.height / meta.width;
   if (canvas.width !== Math.round(cssW * dpr)) {
@@ -205,21 +232,21 @@ function draw() {
   ctx.drawImage(mapImg, 0, 0, canvas.width, canvas.height);
   ctx.filter = "none";
 
-  ctx.font = `${Math.round(12 * dpr)}px ${css("--sans")}`;
+  ctx.font = `${Math.round(15 * ui * dpr)}px ${css("--sans")}`;
   for (const [name, w] of Object.entries(meta.waypoints)) {
     const [px, py] = P(w.x, w.y);
     ctx.strokeStyle = css("--muted");
     ctx.fillStyle = css("--muted");
-    ctx.lineWidth = dpr;
-    ctx.beginPath(); ctx.arc(px, py, 6 * dpr, 0, Math.PI * 2); ctx.stroke();
-    ctx.fillText(name, px + 8 * dpr, py - 8 * dpr);
+    ctx.lineWidth = dpr * ui;
+    ctx.beginPath(); ctx.arc(px, py, 8 * ui * dpr, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillText(name, px + 10 * ui * dpr, py - 10 * ui * dpr);
   }
 
   const s = last;
   if (!s) return;
   const line = (pts, color, width, alpha) => {
     if (pts.length < 2) return;
-    ctx.globalAlpha = alpha; ctx.strokeStyle = color; ctx.lineWidth = width * dpr;
+    ctx.globalAlpha = alpha; ctx.strokeStyle = color; ctx.lineWidth = width * ui * dpr;
     ctx.beginPath();
     pts.forEach(([x, y], i) => { const [px, py] = P(x, y); if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py); });
     ctx.stroke(); ctx.globalAlpha = 1;
@@ -233,12 +260,12 @@ function draw() {
   if (visible.trail) line(s.trail, css("--trail"), 2, 0.5);
   const driving = s.mission.stages.some((st) => st.state === "active" && (st.key === "drive" || st.key === "return"));
   if (visible.plan && driving) line(s.plan.pts, css("--plan"), 2.5, 0.9);
-  if (visible.particles) dots(s.particles.pts, css("--accent"), 2 * dpr, s.particles.age > 2 ? 0.25 : 0.6);
-  if (visible.scan && s.scan.age != null && s.scan.age <= 2) dots(s.scan.pts, css("--scan"), 3 * dpr, 0.9);
+  if (visible.particles) dots(s.particles.pts, css("--accent"), 3 * ui * dpr, s.particles.age > 2 ? 0.25 : 0.6);
+  if (visible.scan && s.scan.age != null && s.scan.age <= 2) dots(s.scan.pts, css("--scan"), 4 * ui * dpr, 0.9);
 
   if (s.pose) {
     const [px, py] = P(s.pose.x, s.pose.y);
-    const R = Math.max(7 * dpr, 0.12 / meta.resolution * k);              // 로봇 반경 약 12 cm
+    const R = Math.max(9 * ui * dpr, 0.12 / meta.resolution * k);              // 로봇 반경 약 12 cm
     ctx.save();
     ctx.translate(px, py);
     ctx.rotate(-s.pose.yaw);                                               // 캔버스는 y 가 아래 → 부호 반대

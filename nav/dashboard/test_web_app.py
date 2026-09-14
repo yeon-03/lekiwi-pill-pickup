@@ -153,6 +153,25 @@ def test_camera_placeholder_hides_img_alt_text():
     assert ".cam:not(.live) img { visibility: hidden; }" in css
 
 
+def test_font_size_tokens_used():
+    # 멀리서도 읽히게 글자 크기를 토큰으로 모은다 — 테마와 무관하게 bare :root 에 정의.
+    import re
+    css = (Path(__file__).resolve().parent / "static" / "style.css").read_text(encoding="utf-8")
+    root = re.search(r"^:root \{(.*?)^\}", css, re.S | re.M)
+    assert root and "--ui-scale: 1;" in root.group(1)
+    for name in ("--fs-xs", "--fs-sm", "--fs-md", "--fs-lg", "--fs-xl"):
+        decl = re.search(rf"{name}:\s*([^;]+);", root.group(1))
+        assert decl, name
+        assert "clamp(" in decl.group(1) and "var(--ui-scale)" in decl.group(1), decl.group(1)
+    raw = [ln for ln in css.splitlines() if "font-size:" in ln and "var(--fs-" not in ln]
+    assert raw == [], raw
+    assert not re.search(r"font-size:\s*\d+px", css)
+    html = (Path(__file__).resolve().parent / "static" / "index.html").read_text(encoding="utf-8")
+    assert 'id="font-up"' in html and 'id="font-down"' in html
+    js = (Path(__file__).resolve().parent / "static" / "app.js").read_text(encoding="utf-8")
+    assert "lekiwi-dashboard-ui-scale" in js and js.index('$("stop-btn").addEventListener') < js.index('$("font-up")')
+
+
 def test_stop_and_release_requests_report_failure():
     client = TestClient(create_app(DashboardState(INFO), b"", META, lambda: {}, lambda: {}))
     js = client.get("/static/app.js").text
