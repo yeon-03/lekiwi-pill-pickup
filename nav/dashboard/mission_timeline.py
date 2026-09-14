@@ -1,6 +1,8 @@
 """브리지 /abo/state 전이로 미션 단계(주행 → 집기 → 복귀)를 만든다. ROS 없음."""
 from __future__ import annotations
 
+from mission_words import effective_state, headline
+
 END_OK = {"done"}
 END_FAIL = {"failed", "rejected", "canceled"}
 
@@ -11,6 +13,7 @@ class _Stage:
         self.state = "todo"
         self.start: float | None = None
         self.end: float | None = None
+        self.note = ""                       # 이 단계가 진행 중일 때 마지막으로 받은 /abo/status
 
     def begin(self, now: float) -> None:
         self.state, self.start = "active", now
@@ -20,7 +23,8 @@ class _Stage:
 
     def as_dict(self, now: float) -> dict:
         sec = None if self.start is None else round((self.end if self.end is not None else now) - self.start, 1)
-        return {"key": self.key, "label": self.label, "state": self.state, "sec": sec}
+        return {"key": self.key, "label": self.label, "state": self.state, "sec": sec,
+                "start_at": self.start, "note": self.note}
 
 
 class MissionTimeline:
@@ -35,6 +39,7 @@ class MissionTimeline:
         self.stages: list[_Stage] = []
         self.picked: bool | None = None
         self.outcome: str | None = None
+        self.shown_state: str | None = None   # 문장용 상태 (집기 뒤 moving → returning)
 
     def on_command(self, text: str, now: float) -> None:
         self.command = text.strip()
@@ -48,6 +53,7 @@ class MissionTimeline:
         ret = tok[tok.index("to") + 1] if "to" in tok[2:-1] else "home"
         self.started_at, self.ended_at = now, None
         self.picked, self.outcome = None, None
+        self.shown_state = None                    # 새 미션 문장은 "전달했어요" 부터
         self.stages = [
             _Stage("drive", f"Nav2 주행 {ret} → {self.target}"),
             _Stage("pick", "집기"),
@@ -60,8 +66,11 @@ class MissionTimeline:
     def is_new_mission_since(self, t: float) -> bool:
         return self.started_at is not None and self.started_at > t
 
-    def on_status(self, text: str) -> None:
+    def on_status(self, text: str, now: float | None = None) -> None:
         self.status = text
+        active = self._active()
+        if active is not None:
+            active.note = text
 
     def _active(self) -> _Stage | None:
         return next((s for s in self.stages if s.state == "active"), None)
@@ -76,6 +85,9 @@ class MissionTimeline:
 
     def on_state(self, state: str, now: float, stop_latched: bool = False) -> None:
         self.state = state
+        mid_reject = state == "rejected" and any(s.state != "todo" for s in self.stages)
+        if self.stages and self.ended_at is None and not mid_reject:
+            self.shown_state = effective_state(self.shown_state, state)
         if not self.stages or self.ended_at is not None:
             return
         drive, pick, ret = self.stages
@@ -111,4 +123,11 @@ class MissionTimeline:
             "target": self.target, "color": self.color, "elapsed": elapsed,
             "stages": [s.as_dict(now) for s in self.stages],
             "outcome": self.outcome,
+            "received_at": self.started_at,
+            "headline": self._headline(),
         }
+
+    def _headline(self) -> str:
+        if not self.stages:
+            return headline(None, None)
+        return headline(self.shown_state or "sent", self.color)

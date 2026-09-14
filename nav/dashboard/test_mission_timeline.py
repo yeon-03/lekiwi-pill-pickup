@@ -151,3 +151,58 @@ def test_rejected_fresh_fetch_ends_as_failed():
     assert snap["outcome"] == "failed" and tl.ended_at == 0.1
     tl.on_command("fetch center", 2.0)                     # 다음 fetch 는 새 미션
     assert tl.is_new_mission_since(1.0)
+
+
+def test_stage_start_at_and_notes_stay_with_their_stage():
+    tl = MissionTimeline()
+    tl.on_command("fetch center color:blue", 100.0)
+    tl.on_status("가는 중이에요.", 100.2)                 # 아직 단계가 없다 — 어느 단계에도 안 붙는다
+    tl.on_state("moving", 101.0)
+    tl.on_status("가는 중이에요. 0.8 m 남았어요.", 110.0)
+    tl.on_status("도착했어요.", 129.0)
+    tl.on_state("picking", 130.0)
+    tl.on_status("도착했어요. 물건을 집는 중이에요.")        # 시각 없이 부르는 기존 시그니처
+    snap = tl.snapshot(140.0)
+    drive, pick, ret = snap["stages"]
+    assert (drive["start_at"], drive["note"]) == (101.0, "도착했어요.")
+    assert (pick["start_at"], pick["note"]) == (130.0, "도착했어요. 물건을 집는 중이에요.")
+    assert (ret["start_at"], ret["note"]) == (None, "")
+    assert snap["status"] == "도착했어요. 물건을 집는 중이에요."
+    assert snap["received_at"] == 100.0 and snap["color"] == "blue"
+
+
+def test_no_mission_snapshot_has_new_keys():
+    snap = MissionTimeline().snapshot(1.0)
+    assert snap["received_at"] is None
+    assert snap["headline"] == "미션 없음 — fetch 명령을 기다리는 중"
+
+
+def test_headline_follows_state_and_moving_after_pick_is_returning():
+    tl = MissionTimeline()
+    tl.on_command("fetch center color:blue", 0.0)
+    assert tl.snapshot(0.1)["headline"] == "파란색 약을 가져오라고 르키위에게 전달했어요"
+    tl.on_state("moving", 1.0)
+    assert tl.snapshot(1.1)["headline"] == "파란색 약을 향해 가는 중"
+    tl.on_state("arrived", 5.0)
+    assert tl.snapshot(5.1)["headline"] == "파란색 약 앞에 도착했어요"
+    tl.on_state("picking", 6.0)
+    assert tl.snapshot(6.1)["headline"] == "파란색 약을 집는 중"
+    tl.on_state("moving", 20.0)                           # 복귀 주행 피드백
+    assert tl.snapshot(20.1)["headline"] == "파란색 약을 가지고 돌아오는 중"
+    tl.on_state("returning", 21.0)
+    tl.on_state("moving", 22.0)
+    tl.on_state("moving", 23.0)                           # 여러 번 와도 계속 복귀 문장
+    assert tl.snapshot(23.1)["headline"] == "파란색 약을 가지고 돌아오는 중"
+    tl.on_state("done", 30.0)
+    assert tl.snapshot(31.0)["headline"] == "파란색 약을 가져왔어요"
+
+
+def test_headline_failed_pick_and_no_color():
+    tl = MissionTimeline()
+    tl.on_command("fetch center", 0.0)
+    tl.on_state("moving", 1.0)
+    tl.on_state("picking", 5.0)
+    tl.on_pick_done(False, 20.0)
+    tl.on_state("returning", 21.0)
+    tl.on_state("failed", 40.0)
+    assert tl.snapshot(41.0)["headline"] == "약을 가져오지 못했어요"

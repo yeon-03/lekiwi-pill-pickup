@@ -142,3 +142,13 @@ def test_snapshot_lists_are_copies():
     snap["particles"]["pts"][0][0] = 55.0
     snap["particles"]["pts"].append([0, 0])
     assert s.snapshot(3.0)["particles"]["pts"] == [[3.0, 4.0]]
+
+
+def test_bridge_status_note_lands_on_active_stage():
+    s = DashboardState(INFO)
+    s.on_command("fetch center color:red", 0.0)
+    s.on_bridge_state("moving", 1.0)
+    s.on_bridge_status("가는 중이에요.", 2.0)
+    m = s.snapshot(3.0)["mission"]
+    assert m["stages"][0]["note"] == "가는 중이에요." and m["stages"][0]["start_at"] == 1.0
+    assert m["headline"] == "빨간색 약을 향해 가는 중" and m["received_at"] == 0.0
