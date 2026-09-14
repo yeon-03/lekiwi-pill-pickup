@@ -96,6 +96,12 @@ python3 nav/mission/pick_adapter.py \
 집기 의존성(numpy/opencv/scipy/lerobot)이 있는 파이썬은 대개 다른
 환경이므로, 다르면 반드시 지정해야 합니다.
 
+어댑터는 ros2 환경에서 떠 있으므로 `PYTHONPATH`·`LD_LIBRARY_PATH` 에 ROS 경로
+(`/opt/ros/...`, colcon 작업공간)가 들어 있습니다. 집기 스크립트를 실행할 때는 이
+ROS 항목만 빼고 넘기므로(`pick_adapter.child_env`), conda 환경의 파이썬을 그대로
+`--python` 에 주면 됩니다 — 예전처럼 환경변수를 지우는 보조 스크립트를 따로 둘
+필요가 없습니다. 직접 넣은 다른 경로(CUDA 라이브러리 등)는 그대로 남습니다.
+
 `--pick-script` 로 집기 스크립트를 고릅니다 (`--repo` 기준 경로, 인자·결과
 파일 규약은 둘이 같다).
 

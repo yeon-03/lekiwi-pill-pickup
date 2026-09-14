@@ -60,6 +60,33 @@ from std_msgs.msg import Bool, String
 SKILL = "pill_pickup"
 RESULT = f"/tmp/lekiwi_result_{SKILL}.json"
 
+# 집기 스크립트는 ROS 를 모른다(lerobot·opencv 환경). 이 어댑터는 ros2 환경에서 떠서
+# PYTHONPATH/LD_LIBRARY_PATH 에 /opt/ros/... 와 colcon 작업공간 경로가 들어 있는데, 그대로
+# 물려주면 다른 인터프리터(--python, 예: conda 의 lerobot 환경)에 ROS 의 파이썬 패키지와
+# 공유 라이브러리가 섞인다. 2026-09-13 실기기에서 같은 이유로(로봇 쪽 lekiwi_host 가 ROS
+# 환경을 물려받음) 카메라를 여는 순간 USB 가 끊기는 일이 있었고, 노트북에서는 PYTHONPATH 를
+# 빼는 보조 스크립트를 따로 두고 --python 에 넘겨야 했다. 여기서 ROS 경로 항목만 빼서
+# 넘긴다 -- 사용자가 직접 넣은 경로(CUDA 라이브러리 등)는 그대로 둔다.
+ROS_PATH_VARS = ("PYTHONPATH", "LD_LIBRARY_PATH")
+
+
+def child_env(env=None):
+    """집기 스크립트에 넘길 환경변수. ROS 설치·작업공간 경로를 PYTHONPATH/LD_LIBRARY_PATH 에서 뺀다."""
+    env = dict(os.environ if env is None else env)
+    prefixes = ["/opt/ros/"]
+    for var in ("AMENT_PREFIX_PATH", "COLCON_PREFIX_PATH"):
+        prefixes += [p.rstrip("/") + "/" for p in env.get(var, "").split(os.pathsep) if p]
+    for var in ROS_PATH_VARS:
+        if var not in env:
+            continue
+        keep = [p for p in env[var].split(os.pathsep)
+                if p and not any(p.startswith(x) or p + "/" == x for x in prefixes)]
+        if keep:
+            env[var] = os.pathsep.join(keep)
+        else:
+            del env[var]
+    return env
+
 
 class PickAdapter(Node):
     def __init__(self, repo, mapping, timeout, python, extra, script="scripts/pick_cycle.py"):
@@ -138,8 +165,9 @@ class PickAdapter(Node):
                    "--color", color, "--result-file", RESULT] + self.extra
             self.get_logger().info("실행: " + " ".join(cmd))
             t0 = time.time()
+            # ROS 경로를 뺀 환경으로 실행한다 (child_env 주석 참고).
             p = subprocess.run(cmd, cwd=self.repo, timeout=self.timeout,
-                               capture_output=True, text=True)
+                               capture_output=True, text=True, env=child_env())
             dt = time.time() - t0
 
             if p.returncode != 0:
