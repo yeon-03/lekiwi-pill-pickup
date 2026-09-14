@@ -109,7 +109,7 @@ class DashboardState:
 
     def on_bridge_status(self, text: str, now: float) -> None:
         with self._lock:
-            self.timeline.on_status(text, now)
+            self.timeline.on_status(text)
             self.topics.record("/abo/status", now, text)
 
     def on_command(self, text: str, now: float) -> None:

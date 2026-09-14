@@ -152,3 +152,18 @@ def test_bridge_status_note_lands_on_active_stage():
     m = s.snapshot(3.0)["mission"]
     assert m["stages"][0]["note"] == "가는 중이에요." and m["stages"][0]["start_at"] == 1.0
     assert m["headline"] == "빨간색 약을 향해 가는 중" and m["received_at"] == 0.0
+
+
+def test_stop_idle_reply_does_not_overwrite_pick_note():
+    s = DashboardState(INFO)
+    s.on_command("fetch center color:blue", 0.0)
+    s.on_bridge_state("moving", 1.0)
+    s.on_bridge_state("picking", 5.0)
+    s.on_bridge_status("도착했어요. 물건을 집는 중이에요.", 5.5)
+    s.engage_stop(6.0)
+    s.on_bridge_state("idle", 6.1)
+    s.on_bridge_status("가고 있지 않아요.", 6.1)
+    m = s.snapshot(7.0)["mission"]
+    assert m["headline"] == "파란색 약을 집는 중"
+    assert m["stages"][1]["note"] == "도착했어요. 물건을 집는 중이에요."
+    assert m["status"] == "가고 있지 않아요."

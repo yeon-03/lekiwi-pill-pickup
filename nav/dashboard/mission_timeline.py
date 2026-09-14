@@ -5,6 +5,9 @@ from mission_words import effective_state, headline
 
 END_OK = {"done"}
 END_FAIL = {"failed", "rejected", "canceled"}
+# 미션 중 브리지의 idle 은 stop 에 대한 응답뿐이다 — 이 문장·상태로 진행 중 단계의 문장/headline 을 덮지 않는다.
+IDLE_REPLY = "가고 있지 않아요."
+MID_MISSION_REPLIES = {"idle", "rejected"}
 
 
 class _Stage:
@@ -66,10 +69,10 @@ class MissionTimeline:
     def is_new_mission_since(self, t: float) -> bool:
         return self.started_at is not None and self.started_at > t
 
-    def on_status(self, text: str, now: float | None = None) -> None:
+    def on_status(self, text: str) -> None:
         self.status = text
         active = self._active()
-        if active is not None:
+        if active is not None and text.strip() != IDLE_REPLY:
             active.note = text
 
     def _active(self) -> _Stage | None:
@@ -85,8 +88,9 @@ class MissionTimeline:
 
     def on_state(self, state: str, now: float, stop_latched: bool = False) -> None:
         self.state = state
-        mid_reject = state == "rejected" and any(s.state != "todo" for s in self.stages)
-        if self.stages and self.ended_at is None and not mid_reject:
+        started = any(s.state != "todo" for s in self.stages)
+        mid_reply = started and state in MID_MISSION_REPLIES     # 진행 중 미션의 idle(stop 응답)·rejected(새 fetch 응답)
+        if self.stages and self.ended_at is None and not mid_reply:
             self.shown_state = effective_state(self.shown_state, state)
         if not self.stages or self.ended_at is not None:
             return

@@ -3,6 +3,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import pytest  # noqa: E402
+
 from mission_timeline import MissionTimeline  # noqa: E402
 
 
@@ -156,12 +158,12 @@ def test_rejected_fresh_fetch_ends_as_failed():
 def test_stage_start_at_and_notes_stay_with_their_stage():
     tl = MissionTimeline()
     tl.on_command("fetch center color:blue", 100.0)
-    tl.on_status("가는 중이에요.", 100.2)                 # 아직 단계가 없다 — 어느 단계에도 안 붙는다
+    tl.on_status("가는 중이에요.")                        # 아직 단계가 없다 — 어느 단계에도 안 붙는다
     tl.on_state("moving", 101.0)
-    tl.on_status("가는 중이에요. 0.8 m 남았어요.", 110.0)
-    tl.on_status("도착했어요.", 129.0)
+    tl.on_status("가는 중이에요. 0.8 m 남았어요.")
+    tl.on_status("도착했어요.")
     tl.on_state("picking", 130.0)
-    tl.on_status("도착했어요. 물건을 집는 중이에요.")        # 시각 없이 부르는 기존 시그니처
+    tl.on_status("도착했어요. 물건을 집는 중이에요.")
     snap = tl.snapshot(140.0)
     drive, pick, ret = snap["stages"]
     assert (drive["start_at"], drive["note"]) == (101.0, "도착했어요.")
@@ -206,3 +208,29 @@ def test_headline_failed_pick_and_no_color():
     tl.on_state("returning", 21.0)
     tl.on_state("failed", 40.0)
     assert tl.snapshot(41.0)["headline"] == "약을 가져오지 못했어요"
+
+
+@pytest.mark.parametrize("latched", [True, False])
+def test_idle_reply_mid_mission_keeps_headline_and_stage_note(latched):
+    # 브리지는 미션 중 idle("가고 있지 않아요.")을 stop 의 응답으로만 낸다 — 집기는 계속 진행 중으로 보인다.
+    tl = MissionTimeline()
+    tl.on_command("fetch center color:blue", 0.0)
+    tl.on_state("moving", 1.0)
+    tl.on_state("picking", 5.0)
+    tl.on_status("도착했어요. 물건을 집는 중이에요.")
+    tl.on_state("idle", 6.0, stop_latched=latched)
+    tl.on_status("가고 있지 않아요.")
+    snap = tl.snapshot(7.0)
+    assert snap["headline"] == "파란색 약을 집는 중"
+    assert snap["stages"][1]["state"] == "active"
+    assert snap["stages"][1]["note"] == "도착했어요. 물건을 집는 중이에요."
+    assert snap["status"] == "가고 있지 않아요." and snap["state"] == "idle"
+    tl.on_state("returning", 8.0)                          # 이어서 진행하면 문장도 따라간다
+    assert tl.snapshot(8.1)["headline"] == "파란색 약을 가지고 돌아오는 중"
+
+
+def test_idle_before_any_stage_still_shows_idle_headline():
+    tl = MissionTimeline()
+    tl.on_command("fetch center color:blue", 0.0)
+    tl.on_state("idle", 0.5)
+    assert tl.snapshot(1.0)["headline"] == "르키위 대기 중"
