@@ -146,6 +146,20 @@ def test_index_has_dashboard_regions_and_assets():
     assert js.status_code == 200 and "EventSource" in js.text
 
 
+def test_camera_placeholder_hides_img_alt_text():
+    # 스트림이 없을 때 <img> 의 alt 글자가 .cam-empty 안내와 겹치지 않게 (자리는 유지).
+    client = TestClient(create_app(DashboardState(INFO), b"", META, lambda: {}, lambda: {}))
+    css = client.get("/static/style.css").text
+    assert ".cam:not(.live) img { visibility: hidden; }" in css
+
+
+def test_stop_and_release_requests_report_failure():
+    client = TestClient(create_app(DashboardState(INFO), b"", META, lambda: {}, lambda: {}))
+    js = client.get("/static/app.js").text
+    assert "정지 요청 실패" in js and "로봇 전원 스위치를 사용하세요" in js
+    assert "해제 요청 실패" in js
+
+
 def test_stop_button_is_wired_before_map_info_fetch():
     client = TestClient(create_app(DashboardState(INFO), b"", META, lambda: {}, lambda: {}))
     js = client.get("/static/app.js").text

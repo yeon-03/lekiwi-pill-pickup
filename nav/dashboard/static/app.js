@@ -30,10 +30,32 @@ function fmtSec(s) {
   return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 }
 
+// 정지/해제 요청 실패 문구. SSE 가 0.2 s 마다 warn-banner 를 다시 그리므로 성공할 때까지 붙잡아 둔다.
+let requestError = "";
+
+function showWarnings(list) {
+  const all = requestError ? [requestError, ...list] : list;
+  $("warn-banner").hidden = all.length === 0;
+  $("warn-banner").textContent = all.join(" · ");
+}
+
+async function postAction(url, message) {
+  try {
+    const r = await fetch(url, { method: "POST" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    requestError = "";
+  } catch (err) {
+    requestError = message(err.message || String(err));
+  }
+  showWarnings(last ? last.warnings : []);
+}
+
 async function init() {
   // Wire stop/release buttons first (safety-critical)
-  $("stop-btn").addEventListener("click", () => fetch("/api/stop", { method: "POST" }));
-  $("release-btn").addEventListener("click", () => fetch("/api/stop/release", { method: "POST" }));
+  $("stop-btn").addEventListener("click", () =>
+    postAction("/api/stop", (why) => `정지 요청 실패: ${why} — 로봇 전원 스위치를 사용하세요`));
+  $("release-btn").addEventListener("click", () =>
+    postAction("/api/stop/release", (why) => `해제 요청 실패: ${why}`));
 
   // Build legend and set up layer visibility
   buildLegend();
@@ -97,8 +119,7 @@ function render(s) {
 
   $("latch-banner").hidden = !s.stop.latched;
   $("latch-info").textContent = s.stop.latched ? `stop ${s.stop.sent}회 · ${s.stop.last_result || ""}` : "";
-  $("warn-banner").hidden = s.warnings.length === 0;
-  $("warn-banner").textContent = s.warnings.join(" · ");
+  showWarnings(s.warnings);
 
   const p = s.pose;
   $("pose-info").textContent = p
