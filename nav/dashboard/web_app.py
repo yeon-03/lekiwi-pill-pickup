@@ -19,11 +19,11 @@ STATIC = Path(__file__).resolve().parent / "static"
 
 
 def make_stop_handlers(state, pick, publish_stop, clock=time.time):
-    def run(actions: list[str], reachable: bool) -> list[str]:
+    def run(actions: list[str], estop_ok: bool) -> list[str]:
         results = []
         for a in actions:
             if a == "estop":
-                if not reachable:
+                if not estop_ok:
                     continue
                 text = pick.estop()
             else:
@@ -35,19 +35,19 @@ def make_stop_handlers(state, pick, publish_stop, clock=time.time):
         return results
 
     def on_stop() -> dict:
-        now = clock()
-        reachable = state.snapshot(now)["pick"]["reachable"]
-        return {"ok": True, "results": run(state.engage_stop(now), reachable)}
+        # 캐시된 reachable 을 믿지 않고 늘 estop 을 시도한다 — 거부는 즉시, 타임아웃은 클라이언트 0.3 s.
+        # 실패 문구가 그대로 남아야 운영자가 팔이 안 멈췄을 수 있음을 안다.
+        return {"ok": True, "results": run(state.engage_stop(clock()), estop_ok=True)}
 
     def on_release() -> dict:
         state.release_stop()
         return {"ok": True}
 
     def on_tick() -> None:
-        run(state.stop_tick(clock()), reachable=False)
+        run(state.stop_tick(clock()), estop_ok=False)
 
     def on_pick_update(reachable: bool, status: dict | None) -> None:
-        run(state.set_pick(reachable, status, clock()), reachable=reachable)
+        run(state.set_pick(reachable, status, clock()), estop_ok=reachable)
 
     return on_stop, on_release, on_tick, on_pick_update
 

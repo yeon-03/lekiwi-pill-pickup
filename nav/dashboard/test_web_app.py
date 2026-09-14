@@ -28,7 +28,7 @@ class FakePick:
 
 def _handlers(reachable):
     state = DashboardState(INFO)
-    pick = FakePick()
+    pick = FakePick("estop 보냄" if reachable else "estop 불가 (8000 응답 없음)")
     published = []
     clock = iter([10.0, 10.05, 10.6, 11.0, 12.0]).__next__
     h = make_stop_handlers(state, pick, lambda: published.append("stop"), clock=clock)
@@ -44,10 +44,12 @@ def test_stop_calls_estop_then_publishes_when_pick_reachable():
     assert state.snapshot(10.0)["stop"]["last_result"] == "estop 보냄 · stop 발행"
 
 
-def test_stop_skips_estop_when_pick_not_running():
+def test_stop_always_tries_estop_and_reports_unreachable_pick():
+    # 캐시된 reachable 로 estop 을 건너뛰면 8000 이 잠깐 안 보일 때 팔이 멈췄다고 착각한다.
     state, pick, published, (on_stop, *_rest) = _handlers(False)
-    assert on_stop()["results"] == ["stop 발행"]
-    assert pick.estops == 0 and published == ["stop"]
+    assert on_stop()["results"] == ["estop 불가 (8000 응답 없음)", "stop 발행"]
+    assert pick.estops == 1 and published == ["stop"]
+    assert state.snapshot(10.0)["stop"]["last_result"] == "estop 불가 (8000 응답 없음) · stop 발행"
 
 
 def test_tick_republishes_during_return_and_release_stops():
@@ -65,8 +67,9 @@ def test_tick_republishes_during_return_and_release_stops():
 def test_pick_update_estops_when_web_comes_up_while_latched():
     state, pick, published, (on_stop, on_release, on_tick, on_pick_update) = _handlers(False)
     on_stop()
+    before = pick.estops
     on_pick_update(True, {"state": "SEARCH"})
-    assert pick.estops == 1
+    assert pick.estops == before + 1
 
 
 def test_estop_failure_is_kept_and_stop_still_publishes():

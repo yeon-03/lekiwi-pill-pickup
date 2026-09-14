@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+import urllib.error
 import urllib.request
 
 
@@ -15,6 +16,12 @@ def _urllib_fetch(method: str, url: str, timeout: float) -> bytes:
     req = urllib.request.Request(url, method=method, data=b"" if method == "POST" else None)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read()
+
+
+def _refused(exc: BaseException) -> bool:
+    if isinstance(exc, ConnectionRefusedError):
+        return True
+    return isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, ConnectionRefusedError)
 
 
 class PickClient:
@@ -34,6 +41,8 @@ class PickClient:
             self.fetch("POST", f"{self.base}/estop", self.timeout)
             return "estop 보냄"
         except Exception as exc:
+            if _refused(exc):
+                return "estop 불가 (8000 응답 없음)"
             return f"estop 실패: {exc}"
 
     def start(self, on_update, interval_s: float = 0.2) -> threading.Thread:

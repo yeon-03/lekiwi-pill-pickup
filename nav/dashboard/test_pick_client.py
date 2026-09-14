@@ -35,6 +35,27 @@ def test_estop_result_text():
     assert PickClient(fetch=boom).estop() == "estop 실패: timed out"
 
 
+def test_estop_connection_refused_is_clear():
+    import urllib.error
+
+    def refused(m, u, t):
+        raise ConnectionRefusedError(111, "Connection refused")
+
+    def url_refused(m, u, t):
+        raise urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+
+    assert PickClient(fetch=refused).estop() == "estop 불가 (8000 응답 없음)"
+    assert PickClient(fetch=url_refused).estop() == "estop 불가 (8000 응답 없음)"
+
+
+def test_estop_real_refused_port():
+    import socket
+    with socket.socket() as s:                       # 비어 있는 포트 — 아무도 듣지 않는다
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    assert PickClient(f"http://127.0.0.1:{port}").estop() == "estop 불가 (8000 응답 없음)"
+
+
 def test_start_calls_update_in_background():
     got = threading.Event()
     PickClient(fetch=lambda m, u, t: b'{"state": "X"}').start(
