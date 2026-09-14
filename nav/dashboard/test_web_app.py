@@ -82,3 +82,15 @@ def test_routes():
     assert client.get("/api/map_info").json() == META
     assert client.post("/api/stop").json() == {"ok": True, "results": []}
     assert client.post("/api/stop/release").json() == {"ok": True}
+
+
+def test_index_has_dashboard_regions_and_assets():
+    client = TestClient(create_app(DashboardState(INFO), b"", META, lambda: {}, lambda: {}))
+    html = client.get("/").text
+    for element_id in ("conn", "mission-chip", "stop-btn", "latch-banner", "release-btn", "warn-banner",
+                       "map", "legend", "stages", "status-text", "cam-front", "cam-wrist", "topics"):
+        assert f'id="{element_id}"' in html, element_id
+    assert "확실한 비상정지는 로봇 전원 스위치" in html
+    assert client.get("/static/style.css").status_code == 200
+    js = client.get("/static/app.js")
+    assert js.status_code == 200 and "EventSource" in js.text
