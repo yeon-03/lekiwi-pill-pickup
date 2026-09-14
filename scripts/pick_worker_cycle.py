@@ -46,6 +46,7 @@ import signal
 import sys
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -65,6 +66,9 @@ COLOR_WORDS = {
 DEFAULT_MAX_SECONDS = 120.0
 #: 집는 중 잡았을 수 있는 상태 (시간초과 때 grasped 추정용)
 GRASPED_STATES = ("GRASPED", "GRASP_CHECK", "GRASP_OK", "CARRY_HOME", "DONE")
+#: 진행 중에 바뀔 때마다 한 줄씩 출력할 status 키 -- 어댑터가 실행마다 파일로 남긴다.
+#: 예전엔 끝날 때 결과 한 줄만 나와서, 5분 제한에 걸린 실패(2026-09-14)의 원인을 볼 수 없었다.
+REPORT_KEYS = ("state", "pick_attempts", "retries", "gave_up", "arm_done", "error")
 
 
 def parse_args(argv=None):
@@ -95,6 +99,10 @@ def parse_args(argv=None):
     ap.add_argument("--max-pick-attempts", type=int, default=None,
                     help="접근부터 다시 집는 최대 횟수(첫 시도 포함). 다 쓰면 포기. 기본은 워커 설정(5)")
     ap.add_argument("--dry-run", action="store_true", help="계산만 하고 실제로 움직이지 않음")
+    ap.add_argument("--view-port", type=int, default=0,
+                    help="0 이 아니면 집는 동안 워커가 그린 front/wrist 화면(십자선·검출·정렬 숫자)을 "
+                         "http://<노트북>:<포트> 로 보여준다 (보기 전용). 로봇 호스트는 클라이언트를 "
+                         "하나만 받으므로 웹 시연 UI 를 따로 켤 수 없을 때 쓴다")
     return ap.parse_args(argv)
 
 
@@ -145,17 +153,25 @@ def outcome(status: dict):
 def run_cycle(worker, *, max_seconds: float, target_class: str | None = None,
               poll_s: float = 0.2, join_timeout_s: float = 15.0,
               stop_flag: threading.Event | None = None,
-              clock=time.monotonic, sleep=time.sleep) -> dict:
-    """워커를 한 번 돌려 결과 dict 를 돌려준다. 어떤 경로로 끝나든 request_stop 한다."""
+              clock=time.monotonic, sleep=time.sleep, report=None) -> dict:
+    """워커를 한 번 돌려 결과 dict 를 돌려준다. 어떤 경로로 끝나든 request_stop 한다.
+
+    report: 한 줄 문자열을 받는 함수. status(REPORT_KEYS)가 바뀔 때마다 부른다.
+    """
     if target_class:
         worker.set_target_class(target_class)
     worker.start_background()
     worker.resume()                      # 워커는 일시정지로 시작한다 -- 웹의 [시작] 버튼 역할
     t0 = clock()
     last = {}
+    prev_snap = None
     try:
         while True:
             last = worker.status.get() or {}
+            snap = {k: last[k] for k in REPORT_KEYS if k in last}
+            if report is not None and snap != prev_snap:
+                report(f"{clock() - t0:6.1f}s 상태 {snap}")
+                prev_snap = snap
             r = outcome(last)
             if r is not None:
                 success, grasped, why = r
@@ -186,6 +202,84 @@ def write_result(path: str, **fields) -> None:
 
 
 REQUIRED_POSES = ("pre_pick", "grasp", "grasp_closed")
+
+
+# ── 보기 전용 화면 서버 ───────────────────────────────────────────────────────
+
+VIEW_PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>르키위 집기 화면</title>
+<style>body{margin:0;padding:12px;background:#111;color:#eee;font-family:sans-serif}
+.row{display:flex;flex-wrap:wrap;gap:8px}.cam{flex:1 1 480px;max-width:100%}
+.cam img{width:100%;background:#222;min-height:240px}#st{margin:8px 0;font-size:15px}</style></head>
+<body><div id="st">연결 중…</div><div class="row">
+<div class="cam"><div>front</div><img id="front" alt="front"></div>
+<div class="cam"><div>wrist</div><img id="wrist" alt="wrist"></div></div>
+<script>
+// 서버는 집는 동안만 떠 있다. 꺼져 있다가 다시 켜진 순간에만 영상을 다시 붙인다.
+const STREAMS=['front','wrist'];let up=false;
+function load(v){document.getElementById(v).src='/stream/'+v+'?t='+Date.now();}
+async function poll(){let ok=false;try{const r=await fetch('/status');const s=await r.json();ok=true;
+ document.getElementById('st').textContent='상태: '+JSON.stringify(s);}
+ catch(e){document.getElementById('st').textContent='집기 중이 아님 (다음 집기를 기다리는 중)';}
+ if(ok&&!up){STREAMS.forEach(load);}up=ok;setTimeout(poll,1000);}
+poll();
+</script></body></html>"""
+
+
+def start_view_server(worker, port: int, host: str = "0.0.0.0", fps: float = 15.0):
+    """워커의 frames(워커가 그린 jpg)·status 를 보여주는 보기 전용 HTTP 서버를 띄운다.
+
+    쓰기(시작/정지) 경로가 없다 -- 로봇 조작은 run_cycle 만 한다. 돌려준 서버는 shutdown() 으로 끈다.
+    """
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):          # 요청마다 찍히면 실행 로그가 묻힌다
+            pass
+
+        def _send(self, code, ctype, body):
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            path = self.path.split("?", 1)[0]
+            if path == "/":
+                return self._send(200, "text/html; charset=utf-8", VIEW_PAGE.encode("utf-8"))
+            if path == "/status":
+                body = json.dumps(worker.status.get() or {}, ensure_ascii=False, default=str)
+                return self._send(200, "application/json; charset=utf-8", body.encode("utf-8"))
+            if path.startswith("/stream/"):
+                view = path[len("/stream/"):]
+                self.send_response(200)
+                self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                try:
+                    while not stopping.is_set():
+                        jpg = worker.frames.get(view)
+                        if jpg:
+                            self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n"
+                                             + f"Content-Length: {len(jpg)}\r\n\r\n".encode() + jpg + b"\r\n")
+                        time.sleep(1.0 / fps)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
+            return self._send(404, "text/plain; charset=utf-8", "없음".encode("utf-8"))
+
+    stopping = threading.Event()
+    srv = ThreadingHTTPServer((host, port), Handler)
+    srv.daemon_threads = True
+    orig_shutdown = srv.shutdown
+
+    def shutdown():
+        stopping.set()
+        orig_shutdown()
+        srv.server_close()
+
+    srv.shutdown = shutdown
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
 
 
 def load_poses(poses_dir: str) -> dict:
@@ -255,8 +349,20 @@ def main(argv=None) -> int:
             infer_fn=make_infer(infer, spec, args.min_color_ratio),
             load_model_fn=lambda _cfg: model,   # 이미 올린 모델을 재사용
         )
-        result = run_cycle(worker, max_seconds=args.max_seconds, target_class=target_class,
-                           join_timeout_s=args.rollout_time + 15.0, stop_flag=stop_flag)
+        view = None
+        if args.view_port:
+            try:
+                view = start_view_server(worker, args.view_port)
+                print(f"[pick_worker_cycle] 집기 화면: http://localhost:{args.view_port}", flush=True)
+            except OSError as e:               # 포트가 이미 쓰이면 화면만 포기하고 집기는 계속
+                print(f"[pick_worker_cycle] 화면 서버를 못 띄움 ({e}) -- 집기는 계속", flush=True)
+        try:
+            result = run_cycle(worker, max_seconds=args.max_seconds, target_class=target_class,
+                               join_timeout_s=args.rollout_time + 15.0, stop_flag=stop_flag,
+                               report=lambda line: print(f"[pick_worker_cycle] {line}", flush=True))
+        finally:
+            if view is not None:
+                view.shutdown()
     except Exception as exc:  # 시작 실패도 결과 파일로 남긴다 -- 어댑터가 이유를 보고한다
         result = {"success": False, "grasped": False,
                   "elapsed_sec": round(time.monotonic() - t_start, 1),

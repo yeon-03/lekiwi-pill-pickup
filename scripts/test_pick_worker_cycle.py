@@ -129,6 +129,52 @@ class FakeWorker:
         self.calls.append("join")
 
 
+class TestViewServer(unittest.TestCase):
+    """집는 동안 워커가 그린 화면을 보여주는 보기 전용 서버."""
+
+    def setUp(self):
+        import socket
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            self.port = sock.getsockname()[1]
+        frames = type("F", (), {"get": lambda _s, v: b"\xff\xd8JPEG-" + v.encode() + b"\xff\xd9"})()
+        self.worker = FakeWorker([{"state": "SERVO", "pick_attempts": 1}])
+        self.worker.frames = frames
+        self.srv = pwc.start_view_server(self.worker, self.port, host="127.0.0.1")
+
+    def tearDown(self):
+        self.srv.shutdown()
+
+    def get(self, path, n=None):
+        import urllib.request
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=5) as r:
+            return r.headers.get("Content-Type"), (r.read(n) if n else r.read())
+
+    def test_page_and_status(self):
+        ctype, body = self.get("/")
+        self.assertIn("text/html", ctype)
+        page = body.decode("utf-8")
+        self.assertIn("'/stream/'", page)          # 영상 주소는 페이지 스크립트가 view 이름을 붙여 만든다
+        self.assertIn("'front'", page)
+        self.assertIn("'wrist'", page)
+        ctype, body = self.get("/status")
+        self.assertEqual(json.loads(body)["state"], "SERVO")
+
+    def test_stream_sends_worker_frames(self):
+        ctype, chunk = self.get("/stream/wrist", n=200)
+        self.assertIn("multipart/x-mixed-replace", ctype)
+        self.assertIn(b"JPEG-wrist", chunk)
+
+    def test_no_write_paths(self):
+        import urllib.error
+        import urllib.request
+        with self.assertRaises(urllib.error.HTTPError):
+            urllib.request.urlopen(f"http://127.0.0.1:{self.port}/stop", timeout=5)
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/", method="POST")
+        with self.assertRaises(urllib.error.HTTPError):
+            urllib.request.urlopen(req, timeout=5)
+
+
 class FakeClock:
     def __init__(self):
         self.t = 0.0
@@ -185,6 +231,21 @@ class TestRunCycle(unittest.TestCase):
     def test_timeout_before_grasp(self):
         r = run(FakeWorker([{"state": "SEARCHING"}]), max_seconds=1.0)
         self.assertFalse(r["grasped"])
+
+    def test_reports_each_status_change_once(self):
+        lines = []
+        w = FakeWorker([{"state": "APPROACH", "pick_attempts": 0}, {"state": "APPROACH", "pick_attempts": 0},
+                        {"state": "GRASPED", "pick_attempts": 1}, {"state": "DONE", "arm_done": True}])
+        run(w, report=lines.append)
+        self.assertTrue(lines)
+        self.assertIn("APPROACH", lines[0])
+        self.assertTrue(any("GRASPED" in ln for ln in lines))
+        texts = [ln.split("상태 ", 1)[1] for ln in lines]
+        self.assertTrue(all(a != b for a, b in zip(texts, texts[1:])), lines)   # 같은 상태는 한 번만
+
+    def test_no_report_by_default(self):
+        w = FakeWorker([{"state": "DONE", "arm_done": True}])
+        self.assertTrue(run(w)["success"])
 
     def test_external_stop_signal(self):
         flag = threading.Event()

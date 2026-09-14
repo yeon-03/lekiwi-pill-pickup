@@ -47,6 +47,7 @@ import os
 import queue
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -89,8 +90,11 @@ def child_env(env=None):
 
 
 class PickAdapter(Node):
-    def __init__(self, repo, mapping, timeout, python, extra, script="scripts/pick_cycle.py"):
+    def __init__(self, repo, mapping, timeout, python, extra, script="scripts/pick_cycle.py",
+                 run_log_dir=None):
         super().__init__("pick_adapter")
+        # 실행마다 집기 스크립트 출력(stdout+stderr)을 여기에 파일로 실시간 기록한다. None 이면 남기지 않는다.
+        self.run_log_dir = Path(run_log_dir).expanduser() if run_log_dir else None
         self.repo = Path(repo).expanduser()
         self.script = script
         self.mapping = mapping
@@ -135,7 +139,7 @@ class PickAdapter(Node):
 
         if self.busy:
             # 이미 집는 중인데 또 왔다. 무시한다 -- 두 번 실행하면 팔이 엉킨다.
-            self.get_logger().warn(f"집는 중이라 '{raw}' 요청 무시")
+            self.get_logger().warning(f"집는 중이라 '{raw}' 요청 무시")
             return
 
         color = explicit_color or self.mapping.get(target)
@@ -163,19 +167,38 @@ class PickAdapter(Node):
 
             cmd = [self.python, self.script,
                    "--color", color, "--result-file", RESULT] + self.extra
-            self.get_logger().info("실행: " + " ".join(cmd))
+            # 출력을 모았다가 끝에 버리지 않고 파일로 바로 쓴다 -- 제한시간에 걸리거나 어댑터가
+            # 죽어도 집기가 어디까지 갔는지 남는다 (2026-09-14 5분 실패의 원인을 못 봤다).
+            if self.run_log_dir is not None:
+                self.run_log_dir.mkdir(parents=True, exist_ok=True)
+                log_path = self.run_log_dir / f"{time.strftime('%Y%m%d_%H%M%S')}_{color}.log"
+            else:
+                fd, name = tempfile.mkstemp(prefix="pick_run_", suffix=".log")
+                os.close(fd)
+                log_path = Path(name)
+            self.get_logger().info("실행: " + " ".join(cmd) + f"  (출력 {log_path})")
+            env = child_env()                      # ROS 경로를 뺀 환경 (child_env 주석 참고)
+            env.setdefault("PYTHONUNBUFFERED", "1")  # 출력이 버퍼에 묶이지 않고 파일에 바로 쓰이게
             t0 = time.time()
-            # ROS 경로를 뺀 환경으로 실행한다 (child_env 주석 참고).
-            p = subprocess.run(cmd, cwd=self.repo, timeout=self.timeout,
-                               capture_output=True, text=True, env=child_env())
+            with open(log_path, "w", encoding="utf-8") as out:
+                proc = subprocess.Popen(cmd, cwd=self.repo, stdout=out,
+                                        stderr=subprocess.STDOUT, env=env)
+                try:
+                    rc = proc.wait(timeout=self.timeout)
+                except subprocess.TimeoutExpired:
+                    proc.kill()                    # run() 과 달리 Popen 은 스스로 안 죽인다
+                    proc.wait()
+                    raise
             dt = time.time() - t0
 
-            if p.returncode != 0:
-                tail = (p.stderr or "").strip().splitlines()[-3:]
+            if rc != 0:
+                tail = log_path.read_text(encoding="utf-8", errors="replace").strip().splitlines()[-3:]
                 self.get_logger().error(
-                    f"{self.script} 종료코드 {p.returncode} ({dt:.0f}초)")
+                    f"{self.script} 종료코드 {rc} ({dt:.0f}초)")
                 for line in tail:
                     self.get_logger().error("  " + line)
+            if self.run_log_dir is None:
+                log_path.unlink(missing_ok=True)
 
             ok, why = self.verdict(dt)
 
@@ -217,8 +240,18 @@ class PickAdapter(Node):
             return
         self.busy = False
         self.pub.publish(Bool(data=ok))
-        lg = self.get_logger().info if ok else self.get_logger().warn
-        lg(f"pick_done={ok}  {why}")
+        # rclpy 는 로그를 부르는 코드 위치마다 처음 쓴 심각도를 기억하고, 같은 위치에서 다른
+        # 심각도가 오면 ValueError 를 낸다. 예전엔 info/warn 을 한 줄에서 골라 불러서, 한
+        # 어댑터가 성공(info) 뒤 실패(warn)를 처리하는 순간 예외가 타이머 밖으로 새어 어댑터가
+        # 통째로 죽었다 (2026-09-14 실기기: 파랑 성공 뒤 초록 실패). 호출 위치를 나누고, 로그
+        # 때문에 노드가 죽지 않게 감싼다 -- pick_done 은 이미 보냈다.
+        try:
+            if ok:
+                self.get_logger().info(f"pick_done={ok}  {why}")
+            else:
+                self.get_logger().warning(f"pick_done={ok}  {why}")
+        except Exception as e:
+            print(f"[pick_adapter] 로그 실패({e}): pick_done={ok}  {why}", flush=True)
 
 
 def parse_map(s):
@@ -244,6 +277,9 @@ def main():
                          "예: scripts/pick_worker_cycle.py")
     ap.add_argument("--map", type=parse_map, default="center=green",
                     help="목적지=색상 대응. 예: center=green,left=red,right=blue")
+    ap.add_argument("--run-log-dir", default="~/pickplace_logs/pick_runs",
+                    help="실행마다 집기 스크립트 출력을 <시각>_<색>.log 로 실시간 기록할 폴더. "
+                         "빈 값이면 남기지 않는다")
     ap.add_argument("--timeout", type=float, default=150.0,
                     help="집기 제한시간(초). 로봇 쪽 --pick-timeout(기본 180초)보다 "
                          "짧게 둘 것 -- 그래야 로봇이 먼저 포기하지 않고 "
@@ -305,7 +341,7 @@ def main():
 
     rclpy.init()
     node = PickAdapter(a.repo, mapping, a.timeout, python, pick_opts + list(a.pick_args),
-                       a.pick_script)
+                       a.pick_script, run_log_dir=a.run_log_dir or None)
     ex = MultiThreadedExecutor(num_threads=2)
     ex.add_node(node)
     try:

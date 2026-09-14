@@ -54,6 +54,12 @@ if a.result_file:
     Path(a.result_file).unlink(missing_ok=True)   # 진짜 pick_cycle.py 와 같다
 mode = os.environ.get("STUB_MODE", "ok")
 time.sleep(float(os.environ.get("STUB_SEC", "0.3")))
+if mode == "alternate":             # 호출마다 ok, fail 을 번갈아 (한 어댑터에서 성공 뒤 실패)
+    cnt = Path(__file__).with_name("count")
+    n = int(cnt.read_text()) if cnt.exists() else 0
+    cnt.write_text(str(n + 1))
+    mode = "ok" if n % 2 == 0 else "fail"
+print(f"stub 진행 mode={mode}", flush=True)
 if mode == "crash":                 # 결과를 안 쓰고 죽는다
     sys.exit(1)
 if mode == "hang":                  # 제한시간을 넘긴다
@@ -273,6 +279,45 @@ def case_pick_script_option():
     return ok
 
 
+def case_success_then_failure():
+    """한 어댑터가 성공 뒤 실패를 처리해도 죽지 않아야 한다.
+    2026-09-14 실기기: 성공(info) 뒤 실패(warn)를 같은 로그 줄에서 남기다 rclpy 가
+    'Logger severity cannot be changed between calls' 를 내며 어댑터가 종료됐다.
+    실행마다 --run-log-dir 에 집기 스크립트 출력 파일도 남아야 한다."""
+    name = "성공 뒤 실패 -> 어댑터 계속 동작 + 실행 로그 파일 2개"
+    Path(RESULT).unlink(missing_ok=True)
+    logdir = Path(tempfile.mkdtemp(prefix="pickruns_"))
+    proc = start_adapter(stub_repo(), "alternate", 8, extra=("--run-log-dir", str(logdir)))
+    out, got, alive = "", [], False
+    try:
+        h = Harness()
+        if not h.wait_adapter():
+            h.destroy_node()
+            print(f"  [FAIL] {name}: 어댑터가 뜨지 않았다")
+            show(stop(proc))
+            return False
+        for _ in range(2):
+            n0 = len(h.got)
+            h.pub.publish(String(data="center"))
+            t0 = time.time()
+            while len(h.got) == n0 and time.time() - t0 < 15.0:
+                rclpy.spin_once(h, timeout_sec=0.1)
+            h.collect(1.5)                 # on_tick 이 로그를 남기고 busy 를 푸는 시간
+        got = list(h.got)
+        h.destroy_node()
+        alive = proc.poll() is None
+    finally:
+        out = stop(proc)
+    logs = sorted(logdir.glob("*_green.log"))
+    logged = all("stub 진행" in f.read_text(encoding="utf-8") for f in logs)
+    ok = got == [True, False] and alive and len(logs) == 2 and logged
+    print(f"  [{'PASS' if ok else 'FAIL'}] {name}: pick_done={got} 어댑터살아있음={alive} "
+          f"로그파일={len(logs)}개")
+    if not ok:
+        show(out)
+    return ok
+
+
 def main():
     if not ADAPTER.is_file():
         print(f"pick_adapter.py 를 찾지 못했다: {ADAPTER}")
@@ -296,6 +341,7 @@ def main():
             case_explicit_color_overrides_map(),
             case_no_color_in_request_falls_back_to_map(),
             case_pick_script_option(),
+            case_success_then_failure(),
         ]
     finally:
         rclpy.shutdown()

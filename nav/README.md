@@ -102,6 +102,11 @@ ROS 항목만 빼고 넘기므로(`pick_adapter.child_env`), conda 환경의 파
 `--python` 에 주면 됩니다 — 예전처럼 환경변수를 지우는 보조 스크립트를 따로 둘
 필요가 없습니다. 직접 넣은 다른 경로(CUDA 라이브러리 등)는 그대로 남습니다.
 
+집기 스크립트의 출력은 실행마다 `--run-log-dir`(기본 `~/pickplace_logs/pick_runs/`)에
+`<시각>_<색>.log` 로 **실시간** 기록됩니다. `pick_worker_cycle.py` 는 워커 상태(단계·시도
+횟수·재시도)가 바뀔 때마다 한 줄씩 남기므로, 집기가 오래 걸리거나 실패하면
+`tail -f ~/pickplace_logs/pick_runs/<파일>` 로 어디까지 갔는지 볼 수 있습니다.
+
 `--pick-script` 로 집기 스크립트를 고릅니다 (`--repo` 기준 경로, 인자·결과
 파일 규약은 둘이 같다).
 
