@@ -37,7 +37,8 @@ class GraspArgs:
     # 박스 중심 x 가 (화면 폭 × 이 비율) 보다 왼쪽이면 '그리퍼 쪽' 으로 보고 left_min_conf 이상만 인정한다.
     # 손목 카메라 왼쪽에 보이는 보라색 그리퍼 손가락이 가끔 큐브로 잡히기 때문
     left_region_ratio: float = 0.5
-    left_min_conf: float = 0.85
+    # 2026-09-13 실기기: 0.85 는 진짜 약통도 자주 걸러냈다 — 0.5 에서 그리퍼 오검출 없이 잘 잡힘
+    left_min_conf: float = 0.5
 
     # --- 1. 그리퍼 ---
 
@@ -64,9 +65,10 @@ class GraspArgs:
     #   큐브가 가까워지면 박스 아래 변이 화면 밖으로 잘리므로 중심보다 위 변이 믿을 만하다.
     #   단, 병처럼 위쪽(뚜껑)과 아래쪽(몸통)의 잡히는 느낌이 다른 물체는 bottom 으로 몸통 쪽을
     #   노리는 게 나을 수 있다 (2026-09-13 사용자 피드백: 위쪽을 잡으면 뚜껑이라 안 잡힘).
-    y_anchor: str = "inside"
+    # 기본 center + 25px: 2026-09-13 실기기에서 약통을 가장 안정적으로 잡은 값
+    y_anchor: str = "center"
     # [top/center] 기준 y 의 목표 (화면 중심 y 로부터 px, 위가 음수)
-    y_target_dy: int = 0
+    y_target_dy: int = 25
     # [top/center] 기준 y 가 목표에서 이 픽셀 안이면 세로 정렬된 것으로 본다
     y_tolerance_px: int = 40
     # 집기 직전 '완벽한' 화면 구성을 저장한 참조 파일. 있으면 x_anchor/x_target_dx/y_anchor/y_target_dy/
@@ -95,8 +97,8 @@ class GraspArgs:
     reach_joints: dict[str, float] = field(default_factory=dict)
     # [joints] 최대 누적 시간(초) — 이 이상 뻗지 않는다
     max_reach_s: float = 6.0
-    # 이 크기(px)가 되면 READY (손목 뷰 640 기준)
-    target_size_px: int = 260
+    # 이 크기(px)가 되면 READY (손목 뷰 640 기준). 290 = 2026-09-13 실기기 약통 기준
+    target_size_px: int = 290
     size_metric: str = "width"
     # 크기가 목표 - 이 값 이상이면 "도달"로 본다
     size_tolerance_px: int = 20
@@ -120,11 +122,12 @@ class GraspArgs:
     # 접근부터 다시 한다. 전체 pick 시도는 이 횟수까지 (첫 시도 포함)
     max_pick_attempts: int = 5
     pick_retry_wait_s: float = 3.0
-    # 재시도마다 손목 뷰 목표 크기를 이만큼 키운다 (더 가까이)
-    retry_size_step_px: int = 30
+    # 재시도마다 손목 뷰 목표 크기를 이만큼 키운다 (더 가까이). 기본 0 — 재시도는 retry_depth 로 높이만 내린다
+    retry_size_step_px: int = 0
     # [pose 모드] 재시도마다 pick→grasp 경로를 이 비율만큼 더 넘어갈 수 있게 한다 (0.15 = 15퍼센트 더 뻗음)
     # [joints 모드] max_reach_s 의 이 비율만큼 더 누적할 수 있다
-    retry_overreach: float = 0.15
+    # 기본 0: 경로 전체(pan 포함)를 늘리면 재시도할수록 옆(왼쪽)으로 밀렸다 (2026-09-13). 높이는 retry_depth_* 가 담당
+    retry_overreach: float = 0.0
     # [pose 모드] 재시도마다 높이 관절(shoulder_lift/elbow_flex)만 pick→grasp 경로의 이 비율만큼 더 내린다.
     # retry_overreach 는 경로 전체(pan 포함)를 늘려 재시도할수록 옆으로 밀렸다 (2026-09-13) — 이건 높이만 건드린다.
     retry_depth_step: float = 0.02

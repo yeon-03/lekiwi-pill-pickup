@@ -11,7 +11,7 @@ def test_front_uses_its_own_ratio_threshold():
 
 
 def test_front_falls_back_to_shared_threshold_when_unset():
-    cfg = GraspCheckArgs(min_purple_ratio=0.15)
+    cfg = GraspCheckArgs(min_purple_ratio=0.15, front_min_purple_ratio=None)
     assert cfg.min_ratio_for("front") == 0.15
 
 
@@ -41,3 +41,9 @@ def test_front_ratio_between_shared_and_front_threshold_is_not_ok():
 def test_front_min_purple_ratio_validated():
     with pytest.raises(PickPlaceError):
         GraspCheckArgs(front_min_purple_ratio=1.5).validate()
+
+
+def test_default_front_threshold_is_023():
+    """2026-09-13 실측: front 는 0.23 은 넘어야 제대로 쥔 것 — 기본값으로 둔다."""
+    assert GraspCheckArgs().min_ratio_for("front") == 0.23
+    assert GraspCheckArgs().min_ratio_for("wrist") == 0.15
