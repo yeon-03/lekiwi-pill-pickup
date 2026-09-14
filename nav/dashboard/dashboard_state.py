@@ -115,7 +115,7 @@ class DashboardState:
     def on_command(self, text: str, now: float) -> None:
         with self._lock:
             self.timeline.on_command(text, now)
-            if self.timeline.is_new_mission_since(now - 1e-9):
+            if self.timeline.is_new_mission_since(now - 1e-9):   # 미션 중 반복 fetch 는 초기화하지 않는다
                 self._trail = []
             self.topics.record("/abo/command", now, f'"{text}"')
 
@@ -125,6 +125,7 @@ class DashboardState:
 
     def on_pick_done(self, ok: bool, now: float) -> None:
         with self._lock:
+            self.timeline.on_pick_done(ok, now)
             self.topics.record("/abo/pick_done", now, "true" if ok else "false")
 
     def set_pick(self, reachable: bool, status: dict | None, now: float) -> list[str]:

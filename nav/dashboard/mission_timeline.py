@@ -33,21 +33,29 @@ class MissionTimeline:
         self.started_at: float | None = None
         self.ended_at: float | None = None
         self.stages: list[_Stage] = []
+        self.picked: bool | None = None
+        self.outcome: str | None = None
 
     def on_command(self, text: str, now: float) -> None:
         self.command = text.strip()
         tok = self.command.split()
         if not tok or tok[0].lower() != "fetch" or len(tok) < 2:
             return
+        if self.active():
+            return        # 브리지는 미션 중 같은 fetch 는 무시, 다른 fetch 는 rejected — 진행 중인 미션을 지우지 않는다
         self.target = tok[1]
         self.color = next((t.split(":", 1)[1] for t in tok[2:] if t.lower().startswith("color:")), None)
         ret = tok[tok.index("to") + 1] if "to" in tok[2:-1] else "home"
         self.started_at, self.ended_at = now, None
+        self.picked, self.outcome = None, None
         self.stages = [
             _Stage("drive", f"Nav2 주행 {ret} → {self.target}"),
             _Stage("pick", "집기"),
             _Stage("return", f"복귀 {self.target} → {ret}"),
         ]
+
+    def active(self) -> bool:
+        return self.started_at is not None and self.ended_at is None
 
     def is_new_mission_since(self, t: float) -> bool:
         return self.started_at is not None and self.started_at > t
@@ -57,6 +65,14 @@ class MissionTimeline:
 
     def _active(self) -> _Stage | None:
         return next((s for s in self.stages if s.state == "active"), None)
+
+    def on_pick_done(self, ok: bool, now: float) -> None:
+        if not self.stages or self.ended_at is not None:
+            return
+        pick = self.stages[1]
+        if pick.state == "active":
+            pick.finish(now, ok)
+            self.picked = ok
 
     def on_state(self, state: str, now: float, stop_latched: bool = False) -> None:
         self.state = state
@@ -71,12 +87,19 @@ class MissionTimeline:
                 drive.finish(now, True)
             pick.begin(now)
         elif state == "returning" and ret.state == "todo":
-            if pick.state == "active":
+            if pick.state == "active":           # /abo/pick_done 을 못 받았을 때만 성공으로 본다
                 pick.finish(now, True)
+                self.picked = True
             ret.begin(now)
+        elif state == "rejected" and any(s.state != "todo" for s in self.stages):
+            return                               # 진행 중 미션에 온 거절은 새 fetch 에 대한 답 — 미션은 계속된다
         elif state in END_OK | END_FAIL:
+            ok = state in END_OK
             if active is not None:
-                active.finish(now, state in END_OK)
+                # 집기 실패 후 복귀가 끝나면 브리지는 failed 로 끝낸다 — 복귀 자체는 해냈다.
+                came_back = state == "failed" and active is ret and self.picked is False
+                active.finish(now, ok or came_back)
+            self.outcome = "done" if ok else "failed"
             self.ended_at = now
 
     def snapshot(self, now: float) -> dict:
@@ -87,4 +110,5 @@ class MissionTimeline:
             "state": self.state, "status": self.status, "command": self.command,
             "target": self.target, "color": self.color, "elapsed": elapsed,
             "stages": [s.as_dict(now) for s in self.stages],
+            "outcome": self.outcome,
         }

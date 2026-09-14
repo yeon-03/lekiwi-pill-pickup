@@ -75,6 +75,27 @@ def test_trail_step_and_reset_on_fetch():
     assert s.snapshot(6.0)["mission"]["color"] == "blue"
 
 
+def test_duplicate_fetch_mid_mission_keeps_trail():
+    s = _with_pose()
+    s.on_command("fetch center", 0.0)
+    s.on_bridge_state("moving", 0.5)
+    for i, x in enumerate([0.0, 0.2, 0.5]):
+        s.on_odom((x, 0.0, 0.0), 1.0 + i)
+    s.on_command("fetch center", 4.0)
+    assert len(s.snapshot(4.0)["trail"]) == 3
+
+
+def test_pick_done_reaches_timeline():
+    s = DashboardState(INFO)
+    s.on_command("fetch center", 0.0)
+    s.on_bridge_state("moving", 1.0)
+    s.on_bridge_state("picking", 2.0)
+    s.on_pick_done(False, 3.0)
+    snap = s.snapshot(4.0)
+    assert snap["mission"]["stages"][1]["state"] == "failed"
+    assert snap["topics"]["/abo/pick_done"]["last"] == "false"
+
+
 def test_map_mismatch_warning():
     s = DashboardState(INFO)
     s.on_map_msg(53, 48, 0.05, -0.707, -0.919, 1.0)
