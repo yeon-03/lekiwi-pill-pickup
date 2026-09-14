@@ -194,16 +194,20 @@ def start_web(worker, host: str, port: int, app_factory=None, serve=None) -> boo
         except OSError as exc:
             print(f"[pick_worker_cycle] 경고: 웹 포트 {host}:{port} 사용 불가 ({exc}) -- 카메라 스트림 없이 계속")
             return False
-    if app_factory is None:
-        from webui.app import create_app as app_factory
-    if serve is None:
-        def serve(app, host, port):
-            import uvicorn
-            uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning")).run()
-    app = app_factory(worker)
-    threading.Thread(target=serve, args=(app, host, port), daemon=True, name="pick-web").start()
-    print(f"[pick_worker_cycle] 카메라 스트림 http://{host}:{port}/stream/front")
-    return True
+    try:
+        if app_factory is None:
+            from webui.app import create_app as app_factory
+        if serve is None:
+            def serve(app, host, port):
+                import uvicorn
+                uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning")).run()
+        app = app_factory(worker)
+        threading.Thread(target=serve, args=(app, host, port), daemon=True, name="pick-web").start()
+        print(f"[pick_worker_cycle] 카메라 스트림 http://{host}:{port}/stream/front")
+        return True
+    except Exception as exc:
+        print(f"[pick_worker_cycle] 경고: 웹 시작 실패 ({exc}) -- 카메라 스트림 없이 계속")
+        return False
 
 
 def write_result(path: str, **fields) -> None:

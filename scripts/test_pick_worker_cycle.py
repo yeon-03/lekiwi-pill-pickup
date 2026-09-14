@@ -300,6 +300,17 @@ class TestWeb(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(served, [])
 
+    def test_start_web_returns_false_when_app_factory_raises(self):
+        import socket
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        served = []
+        ok = pwc.start_web("W", "127.0.0.1", port, app_factory=lambda w: (_ for _ in ()).throw(RuntimeError("boom")),
+                           serve=lambda *a: served.append(a))
+        self.assertFalse(ok)
+        self.assertEqual(served, [])
+
 
 if __name__ == "__main__":
     unittest.main()
