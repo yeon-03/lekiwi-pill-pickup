@@ -7,6 +7,7 @@
 관련 문서: [`2026-09-13-pickplace-demo-ui-design.md`](./2026-09-13-pickplace-demo-ui-design.md)
 (기존 집기 웹 UI — 이 대시보드는 그 `/stream`·`/status` 를 재사용한다)
 화면 시안: "A안 수정본" (지도 + 미션 단계 왼쪽, 카메라 두 대 오른쪽 세로, 폭 약 56:44)
+→ 2026-09-14 큰 벽 모니터용 한 화면 3열(지도 · 세로 파이프라인 미션 · 카메라)로 바꿈 — 아래 "화면 배치" 절.
 
 ## 배경
 
@@ -87,7 +88,8 @@
 | 파일 | 역할 | 의존 |
 |---|---|---|
 | `map_geometry.py` | 지도 yaml 읽기, 세계(m)↔픽셀 변환, 자세 합성(map→odom→base_link), 스캔→지도 점, 점 추림 | numpy, yaml (ROS 없음) |
-| `mission_timeline.py` | `/abo/state` 전이 + 시각 → 단계 목록·경과 시간 | 없음 |
+| `mission_timeline.py` | `/abo/state` 전이 + 시각 → 단계 목록·경과 시간, 단계별 시작 시각·마지막 `/abo/status` 문장 | `mission_words` |
+| `mission_words.py` | 상태 → 지금 동작 한 문장 `headline(state, color, prev_state)` (에이보 `mission_text.STATE_TEXT` 복사 — 문구를 바꾸면 양쪽을 같이) | 없음 |
 | `topic_stats.py` | 토픽별 마지막 값 요약·주기(이동 평균)·나이 | 없음 |
 | `stop_latch.py` | 정지 유지 판단: 지금 `stop` 을 보낼지·워커 estop 을 부를지 (시각·브리지 상태 입력) | 없음 |
 | `dashboard_state.py` | 위 넷을 묶은 스레드 안전 상태, `snapshot(now)` → JSON dict | 위 넷 |
@@ -97,6 +99,7 @@
 | `dashboard_node.py` | 진입점: 인자 파싱, rclpy 스핀 스레드 + uvicorn | 위 전부 |
 | `static/index.html`, `static/app.js`, `static/style.css` | A안 화면, canvas 그리기, SSE 수신 | 없음 (CDN 불사용) |
 | `run_dashboard.sh` | 환경변수(ROS_DOMAIN_ID=42 등) 고정 후 실행 | |
+| `preview_server.py` | ROS 없는 미리보기 `--scenario {idle,driving,picking,done,failed} [--port 8011]` — `build_state(scenario, now)` 가 가짜 이벤트를 넣은 상태를 만들고 정지는 로그만 | 위 순수 모듈, fastapi |
 
 순수 로직(`map_geometry`/`mission_timeline`/`topic_stats`/`stop_latch`/`dashboard_state`)은 ROS 없이 테스트한다.
 
@@ -136,8 +139,9 @@
   "trail":     [[x, y], ...],
   "mission":   {"state": "moving", "status": "가는 중이에요. 0.8 m 남았어요.",
                 "command": "fetch center color:green", "elapsed": 31.0,
-                "stages": [{"key": "drive", "label": "Nav2 주행 home → center", "state": "active", "sec": 31.0}, ...],
-                "outcome": null},
+                "stages": [{"key": "drive", "label": "Nav2 주행 home → center", "state": "active", "sec": 31.0,
+                            "start_at": 1789350271.9, "note": "가는 중이에요. 0.8 m 남았어요."}, ...],
+                "outcome": null, "received_at": 1789350270.8, "headline": "초록색 약을 향해 가는 중"},
   "stop":      {"latched": false, "since": null, "sent": 0, "last_result": null},
   "pick":      {"reachable": true, "status": {...워커 /status 그대로...}, "age": 0.2},
   "topics":    {"/scan": {"dir": "in", "rate": 6.0, "age": 0.15, "last": "720빔 · 유효 407"}, ...},
@@ -162,6 +166,36 @@
 다른 fetch 는 `rejected` 로 답한다). 이미 단계가 시작된 미션에 온 `rejected` 는 그 새 fetch 에 대한 답이므로 미션을 끝내지 않는다.
 브리지는 위치 다듬기를 별도 state 로 내지 않으므로 단계로 나누지 않는다(문장에만 나온다).
 정지 유지 중 브리지가 내는 `idle`("가고 있지 않아요")은 대시보드가 보낸 `stop` 의 응답이므로 단계를 바꾸지 않는다.
+
+단계마다 `start_at`(시작 epoch)과 `note`(그 단계가 진행 중일 때 마지막으로 받은 `/abo/status`)를 남긴다 — 단계가 바뀌어도
+앞 단계의 문장은 그 단계에 남는다. 미션에는 `received_at`(fetch 받은 시각)과 `headline` 을 싣는다.
+`headline` 은 에이보 웹앱과 같은 문장이다(`mission_words.py`): 미션 없음 "미션 없음 — fetch 명령을 기다리는 중",
+fetch 후 상태 전 "{c} 약을 가져오라고 르키위에게 전달했어요", moving "{c} 약을 향해 가는 중", arrived "{c} 약 앞에 도착했어요",
+picking "{c} 약을 집는 중", returning "{c} 약을 가지고 돌아오는 중", done "{c} 약을 가져왔어요", failed "{c} 약을 가져오지 못했어요",
+rejected "르키위가 요청을 거절했어요", canceled "르키위가 멈췄어요", idle "르키위 대기 중" (`{c}` 빨간색/파란색/초록색, 색 없으면 "약").
+집기(또는 returning) 뒤의 `moving` 은 복귀 주행이므로 returning 문장으로 본다. 진행 중 미션에 온 `rejected` 는 문장을 바꾸지 않는다.
+
+## 화면 배치 (큰 벽 모니터, 스크롤 없이 한 화면)
+
+화면 폭 1280px 이상: 뷰포트 높이를 꽉 채우는 grid — 헤더(auto) / 본문(1fr) / 토픽 요약 한 줄(auto).
+
+- **헤더**: 연결 · 상태 칩 · **목표 배지**(약통 색으로 꽉 찬 배지, 흰 굵은 글씨 `--fs-xl`, `● 파란색 약 · center`;
+  색은 에이보 웹앱과 같게 red `#D93636` / green `#2E9E4F` / blue `#2F6BD8`, 색 이름 글자를 늘 같이 씀, 목표 없으면 회색 "목표 없음") ·
+  경과 시간 · 가−/가+ · 정지.
+- **본문 3열** 지도(1.15fr) · 미션 진행(0.85fr) · 카메라(1fr). 각 열은 본문 높이 안에서만 커진다.
+  - 지도 canvas 는 칸의 폭·높이 둘 다에 맞춰 53:48 비율로 가운데 그린다. 범례는 아래.
+  - 미션 진행: 왼쪽에 목표 색 굵은 띠. 맨 위 `headline`(큰 글씨) + 마지막 `/abo/status`, 그 아래 세로 파이프라인
+    `명령 받음 ▼ Nav2 주행 ▼ 집기 ▼ 복귀 ▼ 결과`. 단계마다 아이콘(○ 대기 / ◉ 진행 중 / ✔ 완료 / ✖ 실패)·상태 배지·걸린 시간(m:ss),
+    둘째 줄에 시작 시각(HH:MM:SS)과 그 단계의 `note`. 집기 진행 중엔 `시도 n/m · 보라 ratio/thr`(워커 `/status`).
+    진행 중 단계는 크게 강조(깜빡임은 reduced-motion 존중). ▼ 연결선은 끝난 구간 초록, 진행 구간 accent, 남은 구간 회색.
+    결과: done "✔ 완료 · 전체 m:ss"(초록), failed "✖ 물건은 집지 못했어요 · 전체 m:ss"(집기 실패) 또는 "✖ 미션 실패 · 전체 m:ss"(빨강).
+  - 카메라: front / wrist 가 열 높이를 반씩(4:3 contain). 집기 중이면 제목에 `타겟 ● 파란색`. 스트림 `<img>` 가 오류면
+    "영상 연결 안 됨 — 다시 시도 중" 자리표시 후 3 s 뒤 재시도.
+- **토픽 요약**: `/scan` `/tf` `/odom` `/particle_cloud` `/abo/state` `/abo/pick_done` 칩(주기 또는 나이; `/scan`·`/tf`·`/odom` 은
+  2 s 넘으면 경고색). [토픽 자세히] 가 기존 전체 표(`#topics`)를 화면 위 서랍으로 연다(Esc·바깥 클릭·닫기로 닫힘).
+
+1280px 미만은 한 열로 쌓고 스크롤한다(420px 에서 가로 스크롤 없음). 글자 크기는 모두 `--fs-*` 토큰(× `--ui-scale`).
+미리보기: `/usr/bin/python3 nav/dashboard/preview_server.py --scenario picking` → http://127.0.0.1:8011 (카메라는 자리표시).
 
 ## 오래된 데이터 표시
 
@@ -265,7 +299,11 @@ nav/dashboard/run_dashboard.sh --robot-ip 223.194.139.15 --port 8001 [--no-parti
 - `topic_stats`: 주기 계산, 나이, 한 번도 안 받음 → null
 - `stop_latch`: 켜는 순간 estop+stop 1회 / `picking` 중 재전송 없음 / `returning` 이 되면 0.5 s 간격 재전송, 5 s 뒤 멈춤 /
   `canceled` 받으면 즉시 멈춤 / 해제 전엔 새 fetch 에도 유지 / 8000 이 새로 응답하면 estop 재호출
-- `dashboard_state.snapshot`: 오래됨 판정 경계값, JSON 직렬화 가능
+- `dashboard_state.snapshot`: 오래됨 판정 경계값, JSON 직렬화 가능, `/abo/status` 가 진행 중 단계 `note` 로
+- `mission_words.headline`: 모든 상태, 색 없음, 집기 뒤 moving → 복귀 문장
+- `mission_timeline` 추가: 단계별 `start_at`/`note` 가 단계 전환 뒤에도 남음, `received_at`, `headline`
+- `preview_server.build_state`: 시나리오마다 기대 단계 상태·집기 워커 상태
+- 정적 검사: 1280px 이상에서 뷰포트 높이 grid, 새 id(`headline` `target-badge` `topics-summary` `topics-toggle`), 3색 hex, 글자 토큰, 정지 버튼 연결 순서
 - `web_app`: TestClient 로 `/api/map_info`, `/map.png`, `/api/stop`·`/api/stop/release`(가짜 pick_client 호출 순서), SSE 제너레이터 `next()` 1회
 - `pick_worker_cycle --web-port`: 가짜 워커로 앱 팩토리 호출, 기본 바인드 127.0.0.1, 포트 사용 중일 때 집기 계속
 - `headless_worker` 상태 필드: `purple`/`retry_depth`/`frame_age_s` (같은 프레임 반복 시 나이 증가), 기존 단독 웹 UI 테스트 통과
