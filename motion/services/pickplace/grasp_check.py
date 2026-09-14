@@ -42,7 +42,7 @@ class GraspCheckArgs:
     min_purple_ratio: float = 0.15
     # front 뷰만 따로 쓸 문턱. None 이면 min_purple_ratio 를 쓴다.
     # front 는 0.15 로는 덜 쥔 상태도 OK 로 봤다 — 0.23 은 넘어야 제대로 쥔 것 (2026-09-13 실측)
-    front_min_purple_ratio: float | None = None
+    front_min_purple_ratio: float | None = 0.23
     # 뷰별로 좌/우 둘 다 있어야 OK. false 면 한쪽만 있어도 OK (큐브가 한쪽 손가락을 가릴 때)
     require_both_sides: bool = True
 
