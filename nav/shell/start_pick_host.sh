@@ -17,7 +17,10 @@ VENV="${LEKIWI_HOST_VENV:-$HOME/lerobot060_venv}"
 ROBOT_ID="${LEKIWI_NAME:-lekiwi01}"
 # 카메라는 MJPG 강제 -- YUYV 로는 640x480 두 대가 USB 대역폭에서 30fps 를 못 낸다.
 CAMERAS="{front: {type: opencv, index_or_path: /dev/cam_front, fps: 30, width: 640, height: 480, fourcc: MJPG}, wrist: {type: opencv, index_or_path: /dev/cam_wrist, fps: 30, width: 640, height: 480, fourcc: MJPG}}"
-exec "$VENV/bin/python" -m lerobot.robots.lekiwi.lekiwi_host \
+# 브리지는 ros2 launch 안에서 이 스크립트를 띄워서, ROS 의 PYTHONPATH/LD_LIBRARY_PATH 가
+# lerobot venv 에 그대로 섞인다 (직접 실행할 때는 없다). 2026-09-13 실기기에서 브리지가 띄운
+# 호스트만 앞 카메라를 여는 순간 USB 가 끊겨 실패했다 -- 원인 후보라 둘 다 지우고 실행한다.
+exec env -u PYTHONPATH -u LD_LIBRARY_PATH "$VENV/bin/python" -m lerobot.robots.lekiwi.lekiwi_host \
     --robot.id="$ROBOT_ID" \
     --robot.cameras="$CAMERAS" \
     --robot.disable_torque_on_disconnect=false \

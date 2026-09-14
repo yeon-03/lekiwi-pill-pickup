@@ -7,8 +7,9 @@ ROS2 설치가 제대로 됐는지, 어댑터가 규약대로 응답하는지까
 
     python3 nav/tools/test_pick_adapter.py
 
-로봇이 켜져 있어도 안전하다 -- 로봇(도메인 42)과 겹치지 않는 전용
-도메인 77 에서 돈다. 바꾸려면 TEST_DOMAIN_ID.
+로봇이 켜져 있어도 안전하다 -- 로봇(42)·에이보(77)와 겹치지 않는 전용
+도메인 91 에서, 이 컴퓨터 안에서만(ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST)
+돈다. 도메인을 바꾸려면 TEST_DOMAIN_ID.
 
 전부 통과하면 남은 것은 두 가지뿐이다.
   1) 노트북과 로봇이 서로 토픽을 보는가  ->  양쪽 ROS_DOMAIN_ID 를 42 로 맞추고
@@ -36,9 +37,10 @@ HERE = Path(__file__).resolve().parent
 ADAPTER = HERE.parent / "mission" / "pick_adapter.py"
 RESULT = "/tmp/lekiwi_result_pill_pickup.json"
 
-# 로봇은 42 를 쓴다(lekiwi_profile.sh). 시험이 진짜 미션에 끼어들지 않도록
-# 전용 도메인에서 돈다.
-DOMAIN = os.environ.get("TEST_DOMAIN_ID", "77")
+# 로봇은 42(lekiwi_profile.sh), 에이보는 77 을 쓴다. 시험이 진짜 미션에 끼어들지
+# 않도록 전용 도메인에서, 네트워크로 나가지 않게 돈다.
+DOMAIN = os.environ.get("TEST_DOMAIN_ID", "91")
+LOCAL_ONLY = {"ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST", "ROS_STATIC_PEERS": ""}
 
 # 가짜 집기. STUB_MODE 로 결과를 조종한다.
 STUB = '''#!/usr/bin/env python3
@@ -52,6 +54,12 @@ if a.result_file:
     Path(a.result_file).unlink(missing_ok=True)   # 진짜 pick_cycle.py 와 같다
 mode = os.environ.get("STUB_MODE", "ok")
 time.sleep(float(os.environ.get("STUB_SEC", "0.3")))
+if mode == "alternate":             # 호출마다 ok, fail 을 번갈아 (한 어댑터에서 성공 뒤 실패)
+    cnt = Path(__file__).with_name("count")
+    n = int(cnt.read_text()) if cnt.exists() else 0
+    cnt.write_text(str(n + 1))
+    mode = "ok" if n % 2 == 0 else "fail"
+print(f"stub 진행 mode={mode}", flush=True)
 if mode == "crash":                 # 결과를 안 쓰고 죽는다
     sys.exit(1)
 if mode == "hang":                  # 제한시간을 넘긴다
@@ -85,20 +93,23 @@ class Harness(Node):
             rclpy.spin_once(self, timeout_sec=0.1)
 
 
-def stub_repo():
+def stub_repo(script="pick_cycle.py"):
     repo = Path(tempfile.mkdtemp(prefix="pickstub_"))
     (repo / "scripts").mkdir()
-    (repo / "scripts" / "pick_cycle.py").write_text(STUB, encoding="utf-8")
+    (repo / "scripts" / script).write_text(STUB, encoding="utf-8")
     return repo
 
 
-def start_adapter(repo, mode, timeout, stub_sec="0.3"):
+def start_adapter(repo, mode, timeout, stub_sec="0.3", extra=()):
     env = dict(os.environ, STUB_MODE=mode, STUB_SEC=stub_sec,
-               ROS_DOMAIN_ID=DOMAIN)
+               ROS_DOMAIN_ID=DOMAIN, **LOCAL_ONLY)
+    # 실행 로그는 임시 폴더로 -- 기본값(~/pickplace_logs/pick_runs)에 가짜 로그가 섞이지 않게.
+    # extra 에 --run-log-dir 가 있으면 뒤에 오는 값이 이긴다.
     return subprocess.Popen(
         [sys.executable, str(ADAPTER), "--repo", str(repo),
          "--map", "center=green,left=red", "--timeout", str(timeout),
-         "--python", sys.executable],
+         "--python", sys.executable,
+         "--run-log-dir", tempfile.mkdtemp(prefix="pickruns_"), *extra],
         env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
 
@@ -240,6 +251,121 @@ def case_no_color_in_request_falls_back_to_map():
     return ok
 
 
+def case_pick_script_option():
+    """--pick-script 로 다른 집기 스크립트(pick_worker_cycle.py)를 부를 수 있어야 한다.
+    stub 은 scripts/pick_worker_cycle.py 로만 만들어 두므로, 기본 경로를 부르면 실패한다."""
+    name = "--pick-script 로 다른 집기 스크립트 실행"
+    Path(RESULT).unlink(missing_ok=True)
+    proc = start_adapter(stub_repo("pick_worker_cycle.py"), "ok", 8,
+                         extra=("--pick-script", "scripts/pick_worker_cycle.py"))
+    out = ""
+    try:
+        h = Harness()
+        if not h.wait_adapter():
+            h.destroy_node()
+            print(f"  [FAIL] {name}: 어댑터가 뜨지 않았다")
+            show(stop(proc))
+            return False
+        h.got.clear()
+        h.pub.publish(String(data="center:red"))
+        t0 = time.time()
+        while not h.got and time.time() - t0 < 15.0:
+            rclpy.spin_once(h, timeout_sec=0.1)
+        got = h.got[0] if h.got else None
+        h.destroy_node()
+    finally:
+        out = stop(proc)
+    ok = got is True and "pick_worker_cycle.py" in out
+    print(f"  [{'PASS' if ok else 'FAIL'}] {name}: pick_done={got}")
+    if not ok:
+        show(out)
+    return ok
+
+
+def case_success_then_failure():
+    """한 어댑터가 성공 뒤 실패를 처리해도 죽지 않아야 한다.
+    2026-09-14 실기기: 성공(info) 뒤 실패(warn)를 같은 로그 줄에서 남기다 rclpy 가
+    'Logger severity cannot be changed between calls' 를 내며 어댑터가 종료됐다.
+    실행마다 --run-log-dir 에 집기 스크립트 출력 파일도 남아야 한다."""
+    name = "성공 뒤 실패 -> 어댑터 계속 동작 + 실행 로그 파일 2개"
+    Path(RESULT).unlink(missing_ok=True)
+    logdir = Path(tempfile.mkdtemp(prefix="pickruns_"))
+    proc = start_adapter(stub_repo(), "alternate", 8, extra=("--run-log-dir", str(logdir)))
+    out, got, alive = "", [], False
+    try:
+        h = Harness()
+        if not h.wait_adapter():
+            h.destroy_node()
+            print(f"  [FAIL] {name}: 어댑터가 뜨지 않았다")
+            show(stop(proc))
+            return False
+        for _ in range(2):
+            n0 = len(h.got)
+            h.pub.publish(String(data="center"))
+            t0 = time.time()
+            while len(h.got) == n0 and time.time() - t0 < 15.0:
+                rclpy.spin_once(h, timeout_sec=0.1)
+            h.collect(1.5)                 # on_tick 이 로그를 남기고 busy 를 푸는 시간
+        got = list(h.got)
+        h.destroy_node()
+        alive = proc.poll() is None
+    finally:
+        out = stop(proc)
+    logs = sorted(logdir.glob("*_green.log"))
+    logged = all("stub 진행" in f.read_text(encoding="utf-8") for f in logs)
+    ok = got == [True, False] and alive and len(logs) == 2 and logged
+    print(f"  [{'PASS' if ok else 'FAIL'}] {name}: pick_done={got} 어댑터살아있음={alive} "
+          f"로그파일={len(logs)}개")
+    if not ok:
+        show(out)
+    return ok
+
+
+def case_view_page_always_on():
+    """--view-page-port 를 주면 집기 전에도 카메라 화면 페이지가 열리고, 집기 워커에
+    --view-port <worker-view-port> 가 붙어야 한다 (영상은 집는 동안 워커가 보낸다)."""
+    import socket
+    import urllib.request
+    name = "집기 전에도 화면 페이지 열림 + 워커에 --view-port 전달"
+    with socket.socket() as sk:
+        sk.bind(("127.0.0.1", 0))
+        port = sk.getsockname()[1]
+    Path(RESULT).unlink(missing_ok=True)
+    proc = start_adapter(stub_repo("pick_worker_cycle.py"), "ok", 8,
+                         extra=("--pick-script", "scripts/pick_worker_cycle.py",
+                                "--view-page-port", str(port), "--worker-view-port", "18011"))
+    body, status, got, out = "", None, None, ""
+    try:
+        t0 = time.time()
+        while time.time() - t0 < 10:
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2) as r:
+                    body = r.read().decode("utf-8")
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/adapter_status", timeout=2) as r:
+                    status = json.loads(r.read())
+                break
+            except OSError:
+                time.sleep(0.3)
+        h = Harness()
+        if h.wait_adapter():
+            h.pub.publish(String(data="center:green"))
+            t0 = time.time()
+            while not h.got and time.time() - t0 < 15.0:
+                rclpy.spin_once(h, timeout_sec=0.1)
+            got = h.got[0] if h.got else None
+        h.destroy_node()
+    finally:
+        out = stop(proc)
+    ok = ("__WORKER_PORT__" not in body and "':18011'" in body
+          and status is not None and status.get("busy") is False
+          and got is True and "--view-port 18011" in out)
+    print(f"  [{'PASS' if ok else 'FAIL'}] {name}: 페이지={'열림' if body else '안 열림'} "
+          f"대기상태={status} pick_done={got}")
+    if not ok:
+        show(out)
+    return ok
+
+
 def main():
     if not ADAPTER.is_file():
         print(f"pick_adapter.py 를 찾지 못했다: {ADAPTER}")
@@ -248,6 +374,7 @@ def main():
     # 진행 중인 진짜 미션에 섞여 들어간다. 그래서 셸 값을 물려받지 않고
     # 전용 도메인으로 못 박는다. 바꿔야 하면 TEST_DOMAIN_ID 로.
     os.environ["ROS_DOMAIN_ID"] = DOMAIN
+    os.environ.update(LOCAL_ONLY)
     print(f"pick_adapter 규약 검증 (로봇 불필요)  ROS_DOMAIN_ID={DOMAIN}")
     rclpy.init()
     try:
@@ -261,6 +388,9 @@ def main():
             case_duplicate(),
             case_explicit_color_overrides_map(),
             case_no_color_in_request_falls_back_to_map(),
+            case_pick_script_option(),
+            case_success_then_failure(),
+            case_view_page_always_on(),
         ]
     finally:
         rclpy.shutdown()

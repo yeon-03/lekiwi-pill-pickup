@@ -42,9 +42,14 @@ def generate_launch_description():
         # 집기 단계에 브리지가 서보 버스를 넘겨받은 뒤 띄우는 ZMQ 호스트.
         # 예전엔 이 인자가 없어서 host_start() 가 아무것도 안 띄우고 성공으로
         # 넘어갔다 -- 누가 호스트를 계속 켜 두면 주행 중 버스를 뺏겼고(Nav2 사망),
-        # 아무도 안 켜면 집기가 붙을 곳이 없었다. '' 이면 외부에서 관리한다.
+        # 아무도 안 켜면 집기가 붙을 곳이 없었다. none 이면 띄우지 않는다(외부에서 관리 / 이동만 시험).
+        # (ros2 launch 는 빈 값 "host_cmd:=" 를 받지 않는다)
         DeclareLaunchArgument("host_cmd", default_value=f"bash {HOME}/start_pick_host.sh",
-                              description="집기용 ZMQ 호스트 실행 명령. '' 이면 띄우지 않음"),
+                              description="집기용 ZMQ 호스트 실행 명령. none 이면 띄우지 않음"),
+        # 집기 전체 제한시간(초). 노트북 어댑터 --timeout 과 집기 스크립트 --max-seconds 보다
+        # 길어야 한다 -- 그래야 안쪽이 먼저 멈추고 팔을 정리한 뒤 실패를 보고한다.
+        DeclareLaunchArgument("pick_timeout", default_value="180.0",
+                              description="집기 제한시간(초). 넘으면 멈추고 출발 자리로 복귀"),
     ]
 
     sensors = IncludeLaunchDescription(
@@ -87,7 +92,8 @@ def generate_launch_description():
     abo = TimerAction(period=58.0, actions=[ExecuteProcess(
         cmd=["/usr/bin/python3", "-u", f"{HOME}/abo_nav_bridge.py",
              "--map", LaunchConfiguration("map"),
-             "--host-cmd", LaunchConfiguration("host_cmd")],
+             "--host-cmd", LaunchConfiguration("host_cmd"),
+             "--pick-timeout", LaunchConfiguration("pick_timeout")],
         name="abo_nav_bridge", output="screen", respawn=True, respawn_delay=3.0,
         condition=IfCondition(LaunchConfiguration("abo")))])
 

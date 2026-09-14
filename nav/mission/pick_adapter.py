@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """자율주행(로봇)과 집기(노트북)를 잇는 어댑터.
 
-  /abo/pick_request (String)  받음  ->  pick_cycle.py 실행
+  /abo/pick_request (String)  받음  ->  집기 스크립트 실행 (--pick-script)
   /abo/pick_done    (Bool)    보냄  <-  결과 JSON 판정
 
   ** 이 노드는 노트북에서 돈다. 로봇(Pi)이 아니다. **
@@ -29,8 +29,15 @@ ROS 를 전혀 모른다(requirements.txt 에 rclpy 가 없다). 그래서 ROS �
   "이름:색상"으로 색이 실려 온다 -- 그 경우 --map 보다 우선한다. 요청에 색이
   없으면(콜론 없음) 예전처럼 --map 을 그대로 쓴다.
 
+집기 스크립트 (--pick-script, 저장소 기준 경로)
+    scripts/pick_cycle.py         기본값. motion 로직을 직접 조립
+    scripts/pick_worker_cycle.py  motion 의 PickPlaceHeadlessWorker(웹 시연 UI 의
+                                  제어 루프)를 그대로 써서 한 번 집는다
+  둘 다 인자(--color/--result-file/--model/--poses-dir/--remote-ip)와 결과 파일
+  규약이 같아서, 어댑터는 어느 쪽이든 똑같이 부른다.
+
 결과 판정
-  pick_cycle.py 는 시작하자마자 결과 파일을 지우고, 끝나면 다시 쓴다.
+  두 스크립트 모두 시작하자마자 결과 파일을 지우고, 끝나면 다시 쓴다.
   따라서 "파일 없음"은 성공도 실패도 아닌 '끝나기 전에 죽음'이다 -- 셋 다
   복귀는 해야 하므로 pick_done=false 로 보내되, 로그는 구분해서 남긴다.
 """
@@ -40,8 +47,10 @@ import os
 import queue
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import rclpy
@@ -53,16 +62,48 @@ from std_msgs.msg import Bool, String
 SKILL = "pill_pickup"
 RESULT = f"/tmp/lekiwi_result_{SKILL}.json"
 
+# 집기 스크립트는 ROS 를 모른다(lerobot·opencv 환경). 이 어댑터는 ros2 환경에서 떠서
+# PYTHONPATH/LD_LIBRARY_PATH 에 /opt/ros/... 와 colcon 작업공간 경로가 들어 있는데, 그대로
+# 물려주면 다른 인터프리터(--python, 예: conda 의 lerobot 환경)에 ROS 의 파이썬 패키지와
+# 공유 라이브러리가 섞인다. 2026-09-13 실기기에서 같은 이유로(로봇 쪽 lekiwi_host 가 ROS
+# 환경을 물려받음) 카메라를 여는 순간 USB 가 끊기는 일이 있었고, 노트북에서는 PYTHONPATH 를
+# 빼는 보조 스크립트를 따로 두고 --python 에 넘겨야 했다. 여기서 ROS 경로 항목만 빼서
+# 넘긴다 -- 사용자가 직접 넣은 경로(CUDA 라이브러리 등)는 그대로 둔다.
+ROS_PATH_VARS = ("PYTHONPATH", "LD_LIBRARY_PATH")
+
+
+def child_env(env=None):
+    """집기 스크립트에 넘길 환경변수. ROS 설치·작업공간 경로를 PYTHONPATH/LD_LIBRARY_PATH 에서 뺀다."""
+    env = dict(os.environ if env is None else env)
+    prefixes = ["/opt/ros/"]
+    for var in ("AMENT_PREFIX_PATH", "COLCON_PREFIX_PATH"):
+        prefixes += [p.rstrip("/") + "/" for p in env.get(var, "").split(os.pathsep) if p]
+    for var in ROS_PATH_VARS:
+        if var not in env:
+            continue
+        keep = [p for p in env[var].split(os.pathsep)
+                if p and not any(p.startswith(x) or p + "/" == x for x in prefixes)]
+        if keep:
+            env[var] = os.pathsep.join(keep)
+        else:
+            del env[var]
+    return env
+
 
 class PickAdapter(Node):
-    def __init__(self, repo, mapping, timeout, python, extra):
+    def __init__(self, repo, mapping, timeout, python, extra, script="scripts/pick_cycle.py",
+                 run_log_dir=None):
         super().__init__("pick_adapter")
+        # 실행마다 집기 스크립트 출력(stdout+stderr)을 여기에 파일로 실시간 기록한다. None 이면 남기지 않는다.
+        self.run_log_dir = Path(run_log_dir).expanduser() if run_log_dir else None
         self.repo = Path(repo).expanduser()
+        self.script = script
         self.mapping = mapping
         self.timeout = timeout
         self.python = python
         self.extra = extra
         self.busy = False
+        self.last_result = None     # 화면 페이지용: 지난 집기 {ok, why, at}
         self.done_q = queue.Queue()
 
         cbg = MutuallyExclusiveCallbackGroup()
@@ -73,12 +114,12 @@ class PickAdapter(Node):
         # 스레드에서 돌리고, 결과만 이 타이머가 받아 발행한다.
         self.create_timer(0.5, self.on_tick, callback_group=cbg)
 
-        script = self.repo / "scripts" / "pick_cycle.py"
+        script = self.repo / self.script
         if not script.is_file():
-            self.get_logger().error(f"pick_cycle.py 를 찾지 못했다: {script}")
+            self.get_logger().error(f"집기 스크립트를 찾지 못했다: {script}")
             self.get_logger().error("--repo 로 저장소 경로를 지정할 것.")
         self.get_logger().info(
-            f"준비됨. repo={self.repo}  매핑={self.mapping}  "
+            f"준비됨. repo={self.repo}  스크립트={self.script}  매핑={self.mapping}  "
             f"제한시간={self.timeout:.0f}초  도메인={os.environ.get('ROS_DOMAIN_ID','0')}")
 
     # --- 요청 ---------------------------------------------------------------
@@ -100,7 +141,7 @@ class PickAdapter(Node):
 
         if self.busy:
             # 이미 집는 중인데 또 왔다. 무시한다 -- 두 번 실행하면 팔이 엉킨다.
-            self.get_logger().warn(f"집는 중이라 '{raw}' 요청 무시")
+            self.get_logger().warning(f"집는 중이라 '{raw}' 요청 무시")
             return
 
         color = explicit_color or self.mapping.get(target)
@@ -126,20 +167,40 @@ class PickAdapter(Node):
             # 지난 실행 결과가 남아 있으면 이번 것으로 오독된다.
             Path(RESULT).unlink(missing_ok=True)
 
-            cmd = [self.python, "scripts/pick_cycle.py",
+            cmd = [self.python, self.script,
                    "--color", color, "--result-file", RESULT] + self.extra
-            self.get_logger().info("실행: " + " ".join(cmd))
+            # 출력을 모았다가 끝에 버리지 않고 파일로 바로 쓴다 -- 제한시간에 걸리거나 어댑터가
+            # 죽어도 집기가 어디까지 갔는지 남는다 (2026-09-14 5분 실패의 원인을 못 봤다).
+            if self.run_log_dir is not None:
+                self.run_log_dir.mkdir(parents=True, exist_ok=True)
+                log_path = self.run_log_dir / f"{time.strftime('%Y%m%d_%H%M%S')}_{color}.log"
+            else:
+                fd, name = tempfile.mkstemp(prefix="pick_run_", suffix=".log")
+                os.close(fd)
+                log_path = Path(name)
+            self.get_logger().info("실행: " + " ".join(cmd) + f"  (출력 {log_path})")
+            env = child_env()                      # ROS 경로를 뺀 환경 (child_env 주석 참고)
+            env.setdefault("PYTHONUNBUFFERED", "1")  # 출력이 버퍼에 묶이지 않고 파일에 바로 쓰이게
             t0 = time.time()
-            p = subprocess.run(cmd, cwd=self.repo, timeout=self.timeout,
-                               capture_output=True, text=True)
+            with open(log_path, "w", encoding="utf-8") as out:
+                proc = subprocess.Popen(cmd, cwd=self.repo, stdout=out,
+                                        stderr=subprocess.STDOUT, env=env)
+                try:
+                    rc = proc.wait(timeout=self.timeout)
+                except subprocess.TimeoutExpired:
+                    proc.kill()                    # run() 과 달리 Popen 은 스스로 안 죽인다
+                    proc.wait()
+                    raise
             dt = time.time() - t0
 
-            if p.returncode != 0:
-                tail = (p.stderr or "").strip().splitlines()[-3:]
+            if rc != 0:
+                tail = log_path.read_text(encoding="utf-8", errors="replace").strip().splitlines()[-3:]
                 self.get_logger().error(
-                    f"pick_cycle.py 종료코드 {p.returncode} ({dt:.0f}초)")
+                    f"{self.script} 종료코드 {rc} ({dt:.0f}초)")
                 for line in tail:
                     self.get_logger().error("  " + line)
+            if self.run_log_dir is None:
+                log_path.unlink(missing_ok=True)
 
             ok, why = self.verdict(dt)
 
@@ -180,9 +241,88 @@ class PickAdapter(Node):
         except queue.Empty:
             return
         self.busy = False
+        self.last_result = {"ok": ok, "why": why, "at": time.strftime("%H:%M:%S")}
         self.pub.publish(Bool(data=ok))
-        lg = self.get_logger().info if ok else self.get_logger().warn
-        lg(f"pick_done={ok}  {why}")
+        # rclpy 는 로그를 부르는 코드 위치마다 처음 쓴 심각도를 기억하고, 같은 위치에서 다른
+        # 심각도가 오면 ValueError 를 낸다. 예전엔 info/warn 을 한 줄에서 골라 불러서, 한
+        # 어댑터가 성공(info) 뒤 실패(warn)를 처리하는 순간 예외가 타이머 밖으로 새어 어댑터가
+        # 통째로 죽었다 (2026-09-14 실기기: 파랑 성공 뒤 초록 실패). 호출 위치를 나누고, 로그
+        # 때문에 노드가 죽지 않게 감싼다 -- pick_done 은 이미 보냈다.
+        try:
+            if ok:
+                self.get_logger().info(f"pick_done={ok}  {why}")
+            else:
+                self.get_logger().warning(f"pick_done={ok}  {why}")
+        except Exception as e:
+            print(f"[pick_adapter] 로그 실패({e}): pick_done={ok}  {why}", flush=True)
+
+
+# ── 집기 카메라 화면 페이지 (항상 떠 있음) ────────────────────────────────────
+# 영상·워커 상태는 집는 동안에만 워커(pick_worker_cycle --view-port)가 보낸다. 워커 서버만 두면
+# 집기 전후에는 페이지 자체가 안 열려서 새로고침할 수 없었다 (2026-09-14). 그래서 페이지는 항상
+# 떠 있는 어댑터가 주고, 영상은 페이지가 워커 포트에서 직접 받는다(이미지는 다른 포트여도 된다).
+VIEW_PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>르키위 집기 화면</title>
+<style>body{margin:0;padding:12px;background:#111;color:#eee;font-family:sans-serif}
+.row{display:flex;flex-wrap:wrap;gap:8px}.cam{flex:1 1 480px;max-width:100%}
+.cam img{width:100%;background:#222;min-height:240px;display:block}#st{margin:8px 0;font-size:15px}</style></head>
+<body><div id="st">연결 중…</div><div class="row">
+<div class="cam"><div>front</div><img id="front" alt="front"></div>
+<div class="cam"><div>wrist</div><img id="wrist" alt="wrist"></div></div>
+<script>
+const W = location.protocol + '//' + location.hostname + ':__WORKER_PORT__';
+const STREAMS = ['front', 'wrist']; const st = document.getElementById('st'); let up = false;
+function load(v){ document.getElementById(v).src = W + '/stream/' + v + '?t=' + Date.now(); }
+function clear(v){ document.getElementById(v).removeAttribute('src'); }
+function fmt(s){ return s.state + ' · 시도 ' + s.pick_attempts + '/' + s.max_pick_attempts
+  + ' · 재시도 ' + s.retries + '/' + s.max_retries + (s.target_class ? ' · 목표 ' + s.target_class : ''); }
+async function poll(){
+  let ok = false;
+  try { const r = await fetch(W + '/status', {cache: 'no-store'}); const s = await r.json();
+        ok = true; st.textContent = '집는 중: ' + fmt(s); }
+  catch (e) {
+    try { const a = await (await fetch('/adapter_status', {cache: 'no-store'})).json();
+          st.textContent = a.busy ? '집기 준비 중… (워커가 로봇에 연결하는 중)'
+            : '대기 중 — 집기가 시작되면 화면이 자동으로 떠요'
+              + (a.last ? ' (지난 결과: ' + (a.last.ok ? '성공' : '실패') + ' · ' + a.last.why + ' · ' + a.last.at + ')' : ''); }
+    catch (e2) { st.textContent = '어댑터 응답 없음'; }
+  }
+  if (ok && !up) STREAMS.forEach(load);
+  if (!ok && up) STREAMS.forEach(clear);
+  up = ok; setTimeout(poll, 1000);
+}
+poll();
+</script></body></html>"""
+
+
+def start_view_page(node, port, worker_port, host="0.0.0.0"):
+    """카메라 화면 페이지와 /adapter_status 를 주는 보기 전용 HTTP 서버. 돌려준 서버는 shutdown() 으로 끈다."""
+    page = VIEW_PAGE.replace("__WORKER_PORT__", str(worker_port)).encode("utf-8")
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def _send(self, code, ctype, body):
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            path = self.path.split("?", 1)[0]
+            if path == "/":
+                return self._send(200, "text/html; charset=utf-8", page)
+            if path == "/adapter_status":
+                body = json.dumps({"busy": node.busy, "last": node.last_result}, ensure_ascii=False)
+                return self._send(200, "application/json; charset=utf-8", body.encode("utf-8"))
+            return self._send(404, "text/plain; charset=utf-8", "없음".encode("utf-8"))
+
+    srv = ThreadingHTTPServer((host, port), Handler)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
 
 
 def parse_map(s):
@@ -203,8 +343,19 @@ def main():
         description="자율주행(로봇)과 집기(노트북)를 잇는다. 노트북에서 실행할 것.")
     ap.add_argument("--repo", default="~/lekiwi-pill-pickup",
                     help="집기 저장소 경로 (scripts/pick_cycle.py 가 있는 곳)")
+    ap.add_argument("--pick-script", default="scripts/pick_cycle.py",
+                    help="실행할 집기 스크립트 (--repo 기준). "
+                         "예: scripts/pick_worker_cycle.py")
     ap.add_argument("--map", type=parse_map, default="center=green",
                     help="목적지=색상 대응. 예: center=green,left=red,right=blue")
+    ap.add_argument("--run-log-dir", default="~/pickplace_logs/pick_runs",
+                    help="실행마다 집기 스크립트 출력을 <시각>_<색>.log 로 실시간 기록할 폴더. "
+                         "빈 값이면 남기지 않는다")
+    ap.add_argument("--view-page-port", type=int, default=0,
+                    help="0 이 아니면 이 포트에 집기 카메라 화면 페이지를 항상 띄운다. 영상·워커 상태는 "
+                         "집는 동안 워커가 --worker-view-port 로 보낸다 (pick_worker_cycle 일 때 자동으로 넘김)")
+    ap.add_argument("--worker-view-port", type=int, default=8011,
+                    help="집기 워커의 화면 서버 포트 (--view-page-port 를 쓸 때)")
     ap.add_argument("--timeout", type=float, default=150.0,
                     help="집기 제한시간(초). 로봇 쪽 --pick-timeout(기본 180초)보다 "
                          "짧게 둘 것 -- 그래야 로봇이 먼저 포기하지 않고 "
@@ -265,16 +416,32 @@ def main():
               "집기가 바로 실패한다 (시험용 가짜 pick_cycle 이면 무시)", file=sys.stderr)
 
     rclpy.init()
-    node = PickAdapter(a.repo, mapping, a.timeout, python, pick_opts + list(a.pick_args))
+    extra = pick_opts + list(a.pick_args)
+    if a.view_page_port and "pick_worker_cycle" in a.pick_script and "--view-port" not in extra:
+        extra += ["--view-port", str(a.worker_view_port)]
+    node = PickAdapter(a.repo, mapping, a.timeout, python, extra,
+                       a.pick_script, run_log_dir=a.run_log_dir or None)
     ex = MultiThreadedExecutor(num_threads=2)
     ex.add_node(node)
+    page = None
+    if a.view_page_port:
+        try:
+            page = start_view_page(node, a.view_page_port, a.worker_view_port)
+            node.get_logger().info(f"집기 카메라 화면: http://localhost:{a.view_page_port} (항상 열림)")
+        except OSError as e:               # 포트가 막히면 화면만 포기
+            node.get_logger().warning(f"화면 페이지를 못 띄움 ({e}) -- 집기는 계속")
     try:
         ex.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        if page is not None:
+            page.shutdown()
+            page.server_close()
         node.destroy_node()
-        rclpy.shutdown()
+        # SIGTERM/SIGINT 로 끝나면 rclpy 가 이미 컨텍스트를 내렸다 -- 두 번 부르면 RCLError.
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

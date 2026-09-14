@@ -45,6 +45,7 @@ from rclpy.node import Node
 from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
+from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 from std_msgs.msg import String, Bool
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from nav2_msgs.action import NavigateToPose
@@ -65,6 +66,21 @@ def _port_open(port, host="127.0.0.1", timeout=0.5):
             return True
     except OSError:
         return False
+
+
+def fetch_conflict(mission, name, color):
+    """진행 중인 미션이 있을 때 새 fetch 명령을 어떻게 볼지. None | "duplicate" | "busy".
+
+    중계(에이보 -> 노트북 -> 로봇)는 같은 명령을 짧은 간격으로 두 번 넘길 수 있다
+    (2026-09-13 음성 시험에서 0.1초 차이로 두 번 수신). 그대로 받으면 이미 가고 있는
+    미션을 처음부터 다시 시작해 복귀 지점(출발 자리)이 이동 중 위치로 바뀐다.
+    같은 목적지·색이면 무시하고, 다른 명령은 지금 미션이 끝나거나 멈출 때까지 거절한다.
+    """
+    if not mission:
+        return None
+    if mission.get("target") == name and mission.get("color") == color:
+        return "duplicate"
+    return "busy"
 
 
 class AboNav(Node):
@@ -90,8 +106,14 @@ class AboNav(Node):
         # 쓰는 곳은 목표 yaw 기본값 정도라 그 비용(측정 ~40% CPU)이 아깝다.
         # /amcl_pose 는 AMCL 이 갱신할 때만 나오므로 훨씬 싸다.
         self._pose = None
+        # AMCL 은 /amcl_pose 를 TRANSIENT_LOCAL(마지막 값 보관)로 낸다. 구독도 맞춰야 이 노드가
+        # **늦게 떠도** 마지막 위치를 받는다. VOLATILE 이면 런치에서 52초에 정합한 위치를 58초에
+        # 뜬 브리지가 못 받아, 로봇이 가만히 있는 한 "지금 위치를 몰라서"로 첫 명령을 거절한다
+        # (2026-09-13 lekiwi01 실기기에서 발견).
+        amcl_qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                              reliability=ReliabilityPolicy.RELIABLE)
         self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose",
-                                 self._on_amcl, 10)
+                                 self._on_amcl, amcl_qos)
         self.gh = None
         # 미션(왕복) 상태. None 이면 단발 이동.
         self.mission = None          # {"target","return_to","phase"}
@@ -171,6 +193,13 @@ class AboNav(Node):
             if len(rest) >= 3 and rest[-2].lower() in ("to", "->", "로"):
                 ret = rest[-1]; rest = rest[:-2]
             name = " ".join(rest).strip()
+            conflict = fetch_conflict(self.mission, name, color)
+            if conflict == "duplicate":
+                self.get_logger().info(f"진행 중인 미션과 같은 명령이 또 왔다 -- 무시: {raw!r}")
+                return
+            if conflict == "busy":
+                return self.say("지금 다른 심부름 중이에요. 끝나거나 멈춘 뒤에 다시 말씀해 주세요.",
+                                "rejected")
             return self.start_mission(name, ret, color)
 
         tok = raw.split()
@@ -216,18 +245,23 @@ class AboNav(Node):
         if self.host_proc and self.host_proc.poll() is None:
             return True
         log = open(os.path.expanduser("~/pick_host.log"), "ab")
-        self.host_proc = subprocess.Popen(shlex.split(self.host_cmd),
-                                          stdout=log, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(shlex.split(self.host_cmd), stdout=log, stderr=subprocess.STDOUT)
+        self.host_proc = proc
         log.close()                    # 자식이 fd 를 물려받았다
-        self.get_logger().info(f"ZMQ 호스트 기동 (pid {self.host_proc.pid}), 준비 대기")
+        self.get_logger().info(f"ZMQ 호스트 기동 (pid {proc.pid}), 준비 대기")
         # 고정 시간 대신 관측 포트가 열릴 때까지 기다린다. lekiwi_host 는
         # robot.connect()(서보 버스·카메라)를 끝낸 **뒤에** 소켓을 bind 하므로,
         # 포트가 열렸다는 건 버스를 잡았다는 뜻이다.
         t0 = time.time()
         while time.time() - t0 < HOST_READY_TIMEOUT:
-            if self.host_proc.poll() is not None:
+            # 기다리는 동안 다른 콜백(제한시간·종료)이 host_stop 으로 호스트를 내렸을 수 있다.
+            # self.host_proc 을 다시 읽으면 None 이라 죽으므로, 띄운 프로세스(proc)를 직접 본다.
+            if self.host_proc is not proc:
+                self.get_logger().warn("호스트를 기다리는 동안 다른 곳에서 호스트를 내렸다")
+                return False
+            if proc.poll() is not None:
                 self.get_logger().error(
-                    f"ZMQ 호스트가 바로 끝났다 (code {self.host_proc.returncode}). "
+                    f"ZMQ 호스트가 바로 끝났다 (code {proc.returncode}). "
                     "~/pick_host.log 확인")
                 self.host_proc = None
                 return False
@@ -330,16 +364,25 @@ class AboNav(Node):
 
     def begin_pick(self):
         self.mission["phase"] = "picking"
+        # 제한시간은 **지금** 건다. 예전엔 호스트가 뜬 뒤에야 걸어서, 그 사이(버스 넘김 +
+        # 호스트 기동, 실기기 8~9초) pick_deadline 이 0 이라 on_tick 이 곧바로 "너무 오래
+        # 걸림"으로 판정해 기동 중인 호스트를 죽였다 (2026-09-13 가짜 르키위 시험에서 발견).
+        self.pick_deadline = time.time() + self.pick_timeout
         # 서보 버스를 ZMQ 쪽에 넘긴다. 이 시점부터 오도메트리는 멈춘다.
         # 넘기지 못했는데 호스트를 띄우면 두 프로그램이 한 반이중 버스를 동시에
         # 쥐게 된다(명령이 섞여 둘 다 깨진다) -- 그래서 여기서 멈춘다.
         if not self.set_bus(False):
             self.mission = None
             return self.say("바퀴 제어를 넘기지 못해 집기를 시작하지 않았어요.", "failed")
+        # 한 번 더 시도한다 -- 호스트가 카메라를 여는 순간 USB 카메라가 끊겼다 다시 잡혀
+        # "Failed to open OpenCVCamera" 로 바로 죽은 적이 있다 (2026-09-13 실기기, 전원 저하 없음).
         if not self.host_start():
-            self.mission = None
-            self.set_bus(True)
-            return self.say("팔 제어를 시작하지 못했어요.", "failed")
+            self.get_logger().warn("ZMQ 호스트 기동 실패 -- 3초 뒤 한 번 더 시도")
+            time.sleep(3.0)
+            if not self.host_start():
+                self.set_bus(True)
+                # 제자리에 세워 두지 않고 출발 자리로 돌린다 (집기 실패와 같게).
+                return self.return_after_pick(False, "팔 제어를 시작하지 못했어요.")
         color = self.mission.get("color")
         payload = f'{self.mission["target"]}:{color}' if color else self.mission["target"]
         self.pub_pick.publish(String(data=payload))
@@ -361,22 +404,32 @@ class AboNav(Node):
         self.host_stop()
         self.set_bus(True)
         if not msg.data:
-            self.mission = None
-            return self.say("물건을 집지 못했어요.", "failed")
+            # 집기 워커가 재시도(기본 5번)를 다 쓰고 포기했다 -- 그 자리에 두지 않고 출발 자리로 돌린다.
+            return self.return_after_pick(False, "물건을 집지 못했어요.")
+        self.return_after_pick(True, "집었어요.")
+
+    def return_after_pick(self, picked, text):
+        """집기가 끝나면(성공이든 실패든) 버스를 회수한 뒤 호출 -- 재정합하고 출발 자리로 복귀."""
         # pick 이 베이스를 움직였다. 넓게 훑어야 한다 (moved=True 주석 참고).
         self.relocalize(at=self._wp(self.mission["target"]), moved=True)
         rt = self.mission["return_to"]
         pt = self.mission["return_pt"]
         self.mission["phase"] = "returning"
-        self.say(f"집었어요. {rt} 으로 돌아갈게요.", "returning")
+        self.mission["picked"] = picked
+        self.say(f"{text} {rt} 으로 돌아갈게요.", "returning")
         self.go(pt["x"], pt["y"], math.radians(pt.get("yaw", 0.0)), rt)
 
     def on_tick(self):
         if self.mission and self.mission["phase"] == "picking" \
            and time.time() > self.pick_deadline:
-            self.mission = None
+            self.mission["phase"] = "pick_timeout"   # 복귀 전에 pick_done 이 늦게 와도 무시되게
             self.host_stop(); self.set_bus(True)
-            self.say("물건 집기가 너무 오래 걸려서 그만둘게요.", "failed")
+            try:
+                self.return_after_pick(False, "물건 집기가 너무 오래 걸려서 그만둘게요.")
+            except Exception as e:
+                self.get_logger().error(f"시간초과 복귀 실패: {e}")
+                self.mission = None
+                self.say("물건 집기를 그만뒀지만 돌아가지 못했어요.", "failed")
 
     def cancel(self):
         if self.gh is None:
@@ -388,6 +441,7 @@ class AboNav(Node):
 
     def go(self, x, y, yaw, label):
         if not self.cli.wait_for_server(timeout_sec=5.0):
+            self.mission = None   # 남겨두면 다음 fetch 가 "다른 심부름 중"으로 막힌다
             return self.say("자율주행이 준비되지 않았어요. Nav2 를 확인해 주세요.", "failed")
         if yaw is None:
             p = self.pose_now()
@@ -408,6 +462,7 @@ class AboNav(Node):
         gh = fut.result()
         if not gh.accepted:
             self.gh = None
+            self.mission = None   # 남겨두면 다음 fetch 가 "다른 심부름 중"으로 막힌다
             return self.say("거기까지 가는 길을 찾지 못했어요.", "rejected")
         self.gh = gh
         gh.get_result_async().add_done_callback(self.on_result)
@@ -429,7 +484,10 @@ class AboNav(Node):
                 return self.begin_pick()
             if self.mission and self.mission["phase"] == "returning":
                 self.relocalize(at=self.mission.get("return_pt"), state="returning")
+                picked = self.mission.get("picked", True)
                 self.mission = None
+                if not picked:
+                    return self.say("돌아왔어요. 물건은 집지 못했어요.", "failed")
                 return self.say("돌아왔어요. 다 끝났어요.", "done")
             self.say("도착했어요.", "arrived")
         elif st == 5:    # CANCELED
@@ -452,12 +510,18 @@ def main():
     wp = a.waypoints if os.path.exists(a.waypoints) else os.path.expanduser("~/waypoints.yaml")
 
     rclpy.init()
-    n = AboNav(wp, pick_timeout=a.pick_timeout, host_cmd=a.host_cmd or None)
+    # ros2 launch 는 빈 값("host_cmd:=")을 받지 않는다 -- 호스트를 안 띄우려면 none/off/false.
+    host = (a.host_cmd or "").strip()
+    n = AboNav(wp, pick_timeout=a.pick_timeout,
+               host_cmd=None if host.lower() in ("", "none", "off", "false") else host)
     n.reloc_map = a.map or None
     # ZMQ 호스트를 기다리는 동안(set_bus 응답 등) ROS 콜백이 멈추면 안 되므로
     # 멀티스레드 실행기를 쓴다. SingleThreadedExecutor 는 콜백을 하나씩만
     # 처리해서, 블로킹 구간에 /scan 구독도 액션 피드백도 전부 멎는다.
-    ex = MultiThreadedExecutor(num_threads=2)
+    # 4개: set_bus 응답 대기·호스트 준비 대기처럼 콜백 안에서 기다리는 곳이 둘 이상 겹칠 수
+    # 있다. 2개면 둘 다 기다리는 동안 응답을 처리할 스레드가 없어 서비스 응답이 영영 안 온다
+    # (2026-09-13 가짜 르키위 시험에서 발견).
+    ex = MultiThreadedExecutor(num_threads=4)
     ex.add_node(n)
     try:
         ex.spin()

@@ -96,6 +96,39 @@ python3 nav/mission/pick_adapter.py \
 집기 의존성(numpy/opencv/scipy/lerobot)이 있는 파이썬은 대개 다른
 환경이므로, 다르면 반드시 지정해야 합니다.
 
+어댑터는 ros2 환경에서 떠 있으므로 `PYTHONPATH`·`LD_LIBRARY_PATH` 에 ROS 경로
+(`/opt/ros/...`, colcon 작업공간)가 들어 있습니다. 집기 스크립트를 실행할 때는 이
+ROS 항목만 빼고 넘기므로(`pick_adapter.child_env`), conda 환경의 파이썬을 그대로
+`--python` 에 주면 됩니다 — 예전처럼 환경변수를 지우는 보조 스크립트를 따로 둘
+필요가 없습니다. 직접 넣은 다른 경로(CUDA 라이브러리 등)는 그대로 남습니다.
+
+집기 스크립트의 출력은 실행마다 `--run-log-dir`(기본 `~/pickplace_logs/pick_runs/`)에
+`<시각>_<색>.log` 로 **실시간** 기록됩니다. `pick_worker_cycle.py` 는 워커 상태(단계·시도
+횟수·재시도)가 바뀔 때마다 한 줄씩 남기므로, 집기가 오래 걸리거나 실패하면
+`tail -f ~/pickplace_logs/pick_runs/<파일>` 로 어디까지 갔는지 볼 수 있습니다.
+
+`--pick-script` 로 집기 스크립트를 고릅니다 (`--repo` 기준 경로, 인자·결과
+파일 규약은 둘이 같다).
+
+| 스크립트 | 내용 |
+|---|---|
+| `scripts/pick_cycle.py` (기본) | motion 로직을 직접 조립 |
+| `scripts/pick_worker_cycle.py` | 웹 시연 UI 의 제어 루프(`PickPlaceHeadlessWorker`)를 수정 없이 한 번 돌림. 색은 YOLO 클래스 이름에 색 단어가 있으면 그 클래스로, 없으면 HSV 로 거른다 |
+
+```bash
+python3 nav/mission/pick_adapter.py --repo ~/lekiwi-pill-pickup \
+    --pick-script scripts/pick_worker_cycle.py \
+    --python ~/miniconda3/envs/lerobot/bin/python \
+    --model ~/YOLO/outputs/runs/green_pill/weights/best.pt \
+    --poses-dir ~/.PhysicalLabs/pickplace/lekiwi01/poses
+```
+
+lekiwi01 에서 쓰는 자세 세트(2026-09-14, 팔이 옆으로 쓸리지 않게 다시 저장)는
+`scripts/poses/lekiwi01/` 에 있습니다. `--poses-dir` 로 그 폴더를 바로 가리켜도 됩니다.
+
+웹 시연 UI(`motion/webui`)와 이 어댑터를 **동시에 쓰지 마세요** — 로봇
+호스트는 클라이언트를 하나만 받습니다.
+
 제한시간은 로봇 쪽(`--pick-timeout`, 기본 180초)보다 짧게 두어야 합니다.
 그래야 로봇이 먼저 포기하지 않고 어댑터가 실패 이유를 보고합니다.
 
@@ -108,8 +141,10 @@ python3 nav/mission/pick_adapter.py \
 python3 nav/tools/test_pick_adapter.py
 ```
 
-로봇이 켜져 있어도 안전합니다 — 로봇(도메인 42)과 겹치지 않는 전용 도메인
-77 에서 돕니다. 여기까지 통과하면 ROS2 설치와 어댑터는 정상이고, 남은 것은
+로봇이 켜져 있어도 안전합니다 — 로봇(42)·에이보(77)와 겹치지 않는 전용 도메인
+91 에서, 이 컴퓨터 안에서만(`ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`) 돕니다.
+`pick_worker_cycle.py` 자체는 `python -m pytest scripts/test_pick_worker_cycle.py`
+로 가짜 로봇에서 시험합니다. 여기까지 통과하면 ROS2 설치와 어댑터는 정상이고, 남은 것은
 두 가지뿐입니다.
 
 1. 노트북과 로봇이 서로 토픽을 보는가 — 양쪽 `ROS_DOMAIN_ID=42` 로 맞추고
