@@ -43,6 +43,7 @@ import argparse
 import json
 import os
 import signal
+import socket
 import sys
 import threading
 import time
@@ -95,6 +96,10 @@ def parse_args(argv=None):
     ap.add_argument("--max-pick-attempts", type=int, default=None,
                     help="접근부터 다시 집는 최대 횟수(첫 시도 포함). 다 쓰면 포기. 기본은 워커 설정(5)")
     ap.add_argument("--dry-run", action="store_true", help="계산만 하고 실제로 움직이지 않음")
+    ap.add_argument("--web-port", type=int, default=None,
+                    help="지정하면 집기 동안 카메라 스트림·상태 웹(motion/webui)을 이 포트로 띄운다")
+    ap.add_argument("--web-host", default="127.0.0.1",
+                    help="웹 바인드 주소. 다른 기기에서 볼 때만 0.0.0.0 (8000 에는 시작·재시작 버튼도 열린다)")
     return ap.parse_args(argv)
 
 
@@ -181,6 +186,26 @@ def run_cycle(worker, *, max_seconds: float, target_class: str | None = None,
             "elapsed_sec": round(clock() - t0, 1), "last_state": last.get("state")}
 
 
+def start_web(worker, host: str, port: int, app_factory=None, serve=None) -> bool:
+    """카메라 스트림 웹을 데몬 스레드로 띄운다. 실패해도 집기는 계속한다 -- 표시 실패가 미션 실패가 되면 안 된다."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind((host, port))
+        except OSError as exc:
+            print(f"[pick_worker_cycle] 경고: 웹 포트 {host}:{port} 사용 불가 ({exc}) -- 카메라 스트림 없이 계속")
+            return False
+    if app_factory is None:
+        from webui.app import create_app as app_factory
+    if serve is None:
+        def serve(app, host, port):
+            import uvicorn
+            uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning")).run()
+    app = app_factory(worker)
+    threading.Thread(target=serve, args=(app, host, port), daemon=True, name="pick-web").start()
+    print(f"[pick_worker_cycle] 카메라 스트림 http://{host}:{port}/stream/front")
+    return True
+
+
 def write_result(path: str, **fields) -> None:
     Path(path).write_text(json.dumps(fields, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -255,6 +280,8 @@ def main(argv=None) -> int:
             infer_fn=make_infer(infer, spec, args.min_color_ratio),
             load_model_fn=lambda _cfg: model,   # 이미 올린 모델을 재사용
         )
+        if args.web_port:
+            start_web(worker, args.web_host, args.web_port)
         result = run_cycle(worker, max_seconds=args.max_seconds, target_class=target_class,
                            join_timeout_s=args.rollout_time + 15.0, stop_flag=stop_flag)
     except Exception as exc:  # 시작 실패도 결과 파일로 남긴다 -- 어댑터가 이유를 보고한다

@@ -263,5 +263,43 @@ class TestMain(unittest.TestCase):
             self.assertEqual(getattr(a, k), getattr(b, k), k)
 
 
+class TestWeb(unittest.TestCase):
+    def test_args_default_off_and_local_bind(self):
+        a = pwc.parse_args(REQ)
+        self.assertIsNone(a.web_port)
+        self.assertEqual(a.web_host, "127.0.0.1")
+        b = pwc.parse_args(REQ + ["--web-port", "8000", "--web-host", "0.0.0.0"])
+        self.assertEqual((b.web_port, b.web_host), (8000, "0.0.0.0"))
+
+    def test_start_web_runs_server_in_background_thread(self):
+        import socket
+        called = threading.Event()
+        seen = {}
+
+        def serve(app, host, port):
+            seen.update(app=app, host=host, port=port)
+            called.set()
+
+        with socket.socket() as s:                       # 비어 있는 포트 하나 고르기
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        ok = pwc.start_web("W", "127.0.0.1", port, app_factory=lambda w: ("app", w), serve=serve)
+        self.assertTrue(ok)
+        self.assertTrue(called.wait(2.0))
+        self.assertEqual(seen, {"app": ("app", "W"), "host": "127.0.0.1", "port": port})
+
+    def test_start_web_returns_false_when_port_busy(self):
+        import socket
+        with socket.socket() as busy:
+            busy.bind(("127.0.0.1", 0))
+            busy.listen(1)
+            port = busy.getsockname()[1]
+            served = []
+            ok = pwc.start_web("W", "127.0.0.1", port, app_factory=lambda w: w,
+                               serve=lambda *a: served.append(a))
+        self.assertFalse(ok)
+        self.assertEqual(served, [])
+
+
 if __name__ == "__main__":
     unittest.main()
