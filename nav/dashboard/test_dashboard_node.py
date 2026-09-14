@@ -23,6 +23,29 @@ def test_module_does_not_import_rclpy_at_top():
     assert "rclpy" not in dashboard_node.__dict__
 
 
+def test_guarded_timer_callback_logs_instead_of_raising():
+    """타이머 콜백 예외가 rclpy.spin 을 죽이면 구독과 stop 재전송이 조용히 멈춘다."""
+    logged = []
+
+    class Logger:
+        def error(self, msg, **kw):
+            logged.append((msg, kw))
+
+    node = types.SimpleNamespace(get_logger=lambda: Logger())
+    calls = []
+
+    def boom():
+        calls.append("tick")
+        raise RuntimeError("tick 오류")
+
+    cb = dashboard_node._guarded(node, boom)
+    cb()
+    cb()
+    assert calls == ["tick", "tick"]
+    assert len(logged) == 2 and "tick 오류" in logged[0][0]
+    assert logged[0][1].get("throttle_duration_sec") == 5.0
+
+
 def test_main_shutdown_order(monkeypatch):
     """rclpy.shutdown() 은 spin 스레드 join 전에, node.destroy_node() 는 join 뒤에 와야 한다
     (그렇지 않으면 spin 스레드가 구독/타이머를 쓰는 동안 노드가 파괴되는 경쟁 상태가 생긴다)."""

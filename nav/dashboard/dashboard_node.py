@@ -29,6 +29,17 @@ def parse_args(argv=None):
     return ap.parse_args(argv)
 
 
+def _guarded(node, fn):
+    """타이머 콜백 예외가 rclpy.spin 을 죽이면 구독·stop 재전송이 조용히 멈춘다 — 잡아서 로그만 남긴다."""
+    def cb():
+        try:
+            fn()
+        except Exception as exc:
+            node.get_logger().error(f"[dashboard] 타이머 콜백 오류 {type(exc).__name__}: {exc}",
+                                    throttle_duration_sec=5.0)
+    return cb
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
     import rclpy
@@ -49,7 +60,7 @@ def main(argv=None) -> int:
     rclpy.init()
     node = DashboardListener(state, particles=not args.no_particles)
     on_stop, on_release, on_tick, on_pick_update = make_stop_handlers(state, pick, node.publish_stop)
-    node.create_timer(0.1, on_tick)
+    node.create_timer(0.1, _guarded(node, on_tick))
     pick.start(on_pick_update)
     spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True, name="ros-spin")
     spin_thread.start()
