@@ -11,6 +11,7 @@ import json
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -393,6 +394,80 @@ class TestMain(unittest.TestCase):
         b = pick_cycle.parse_args(REQ + ["--remote-ip", "10.0.0.9"])
         for k in ("color", "result_file", "model", "poses_dir", "remote_ip"):
             self.assertEqual(getattr(a, k), getattr(b, k), k)
+
+
+class TestWeb(unittest.TestCase):
+    def test_args_default_off_and_local_bind(self):
+        a = pwc.parse_args(REQ)
+        self.assertIsNone(a.web_port)
+        self.assertEqual(a.web_host, "127.0.0.1")
+        b = pwc.parse_args(REQ + ["--web-port", "8000", "--web-host", "0.0.0.0"])
+        self.assertEqual((b.web_port, b.web_host), (8000, "0.0.0.0"))
+
+    def test_start_web_runs_server_in_background_thread(self):
+        import socket
+        called = threading.Event()
+        seen = {}
+
+        def serve(app, host, port):
+            seen.update(app=app, host=host, port=port)
+            called.set()
+
+        with socket.socket() as s:                       # 비어 있는 포트 하나 고르기
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        ok = pwc.start_web("W", "127.0.0.1", port, app_factory=lambda w: ("app", w), serve=serve)
+        self.assertTrue(ok)
+        self.assertTrue(called.wait(2.0))
+        self.assertEqual(seen, {"app": ("app", "W"), "host": "127.0.0.1", "port": port})
+
+    def test_start_web_returns_false_when_port_busy(self):
+        import socket
+        with socket.socket() as busy:
+            busy.bind(("127.0.0.1", 0))
+            busy.listen(1)
+            port = busy.getsockname()[1]
+            served = []
+            ok = pwc.start_web("W", "127.0.0.1", port, app_factory=lambda w: w,
+                               serve=lambda *a: served.append(a))
+        self.assertFalse(ok)
+        self.assertEqual(served, [])
+
+    def test_start_web_succeeds_when_port_in_time_wait(self):
+        # 서버 쪽이 먼저 끊은 연결은 TIME_WAIT 로 남는다(urllib 폴링·MJPEG). uvicorn 은 SO_REUSEADDR 로
+        # 그 포트를 잡으므로, 탐침도 같은 옵션이어야 다음 워커가 웹 없이 도는 일이 없다.
+        import socket
+        srv = socket.socket()
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+        cli = socket.create_connection(("127.0.0.1", port))
+        conn, _ = srv.accept()
+        conn.close()                                     # 서버 쪽이 먼저 닫는다 -> 서버 포트가 TIME_WAIT
+        srv.close()
+        time.sleep(0.05)
+        cli.close()
+        served = []
+        ok = pwc.start_web("W", "127.0.0.1", port, app_factory=lambda w: w,
+                           serve=lambda *a: served.append(a))
+        self.assertTrue(ok)
+        for _ in range(100):
+            if served:
+                break
+            time.sleep(0.01)
+        self.assertEqual(len(served), 1)
+
+    def test_start_web_returns_false_when_app_factory_raises(self):
+        import socket
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        served = []
+        ok = pwc.start_web("W", "127.0.0.1", port, app_factory=lambda w: (_ for _ in ()).throw(RuntimeError("boom")),
+                           serve=lambda *a: served.append(a))
+        self.assertFalse(ok)
+        self.assertEqual(served, [])
 
 
 if __name__ == "__main__":

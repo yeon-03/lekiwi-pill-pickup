@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import threading
 from typing import Any
 
@@ -39,3 +40,25 @@ class SharedStatus:
     def get(self) -> dict[str, Any]:
         with self._lock:
             return dict(self._status)
+
+
+class FrameAgeTracker:
+    """뷰별로 카메라 이미지 '내용'이 마지막으로 바뀐 시각을 기억한다.
+
+    hz 는 멀쩡한데 같은 프레임이 반복되던 카메라 멈춤(2026-09-13 실기기)을 잡기 위한 것.
+    축소(16칸 간격) 이미지의 해시만 비교해서 매 루프 비용을 작게 유지한다.
+    """
+
+    def __init__(self) -> None:
+        self._hash: dict[str, bytes] = {}
+        self._changed_at: dict[str, float] = {}
+
+    def update(self, view: str, frame: "Any", now: float) -> None:  # type: ignore
+        import numpy as np
+        digest = hashlib.blake2b(frame[::16, ::16].tobytes(), digest_size=8).digest()
+        if self._hash.get(view) != digest:
+            self._hash[view] = digest
+            self._changed_at[view] = now
+
+    def ages(self, now: float) -> dict[str, float]:
+        return {v: round(now - t, 2) for v, t in self._changed_at.items()}

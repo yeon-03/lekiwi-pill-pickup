@@ -21,7 +21,7 @@ import numpy as np
 from services.pickplace.approach import STOP, Approacher, draw_alignment
 from services.pickplace.arm_sequencer import ArmSequencer, draw_wrist_servo
 from services.pickplace.config import PickPlaceConfig
-from services.pickplace.frame_stream import LatestFrame, SharedStatus
+from services.pickplace.frame_stream import FrameAgeTracker, LatestFrame, SharedStatus
 from services.pickplace.grasp_check import GraspChecker, center_purple_ratio, draw_grasp_check
 from services.pickplace.roll_out import RollOutPlayer
 from services.pickplace.wrist_servo import GRIPPER_JOINT, filter_wrist_dets
@@ -219,6 +219,7 @@ class PickPlaceHeadlessWorker:
             checker = GraspChecker(self.cfg.check)
             hold_pose = dict(home)
             hz = 0.0
+            ages = FrameAgeTracker()
 
             while not self.stop_event.is_set():
                 loop_start = time.perf_counter()
@@ -228,6 +229,8 @@ class PickPlaceHeadlessWorker:
                     for v in self.cfg.views
                     if isinstance(obs.get(v), np.ndarray)
                 }
+                for v, img_bgr in frames_bgr.items():
+                    ages.update(v, img_bgr, loop_start)
                 if self.cfg.approach.view not in frames_bgr:
                     self.robot.send_action({**hold_pose, **STOP})
                     self.stop_event.wait(0.05)
@@ -382,6 +385,15 @@ class PickPlaceHeadlessWorker:
                         "paused": paused,
                         "hz": round(hz, 1),
                         "target_class": target_class,
+                        "purple": {
+                            v: {
+                                "ratio": round(min(r.left_ratio, r.right_ratio), 3),
+                                "thr": self.cfg.check.min_ratio_for(v),
+                            }
+                            for v, r in checker.results.items()
+                        },
+                        "retry_depth": round(arm.servo.retry_depth, 3) if arm.servo is not None else 0.0,
+                        "frame_age_s": ages.ages(time.perf_counter()),
                     }
                 )
 
