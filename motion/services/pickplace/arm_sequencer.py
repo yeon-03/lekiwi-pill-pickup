@@ -301,7 +301,8 @@ def draw_wrist_servo(frame_bgr: np.ndarray, arm: ArmSequencer, state_label: str)
         cv2.rectangle(canvas, (bx - ts // 2, by - ts // 2), (bx + ts // 2, by + ts // 2), SIZE_REF_COLOR, 1, cv2.LINE_AA)
         info = (
             f"{servo.cfg.size_metric}={servo.size}/{ts}px  dx={servo.dx:+d} dy={servo.dy:+d}  "
-            f"{servo.cfg.x_anchor}-x {'OK' if servo.x_ok else '..'} y {'OK' if servo.y_ok else '..'}"
+            f"{servo.cfg.x_anchor}-x {'FRZ' if servo.pan_frozen else ('OK' if servo.x_ok else '..')} "
+            f"y {'OK' if servo.y_ok else '..'}"
         )
         # 검출 라벨(박스 위)과 겹치지 않게 박스 아래에, 화면 아래로 나가면 박스 위 라벨보다 더 위에
         ty = y2 + 22 if y2 + 22 < h - 30 else max(y1 - 30, 40)

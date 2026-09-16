@@ -17,6 +17,9 @@ from services.pickplace import PickPlaceError
 from services.pickplace.yolo_detect import Detection
 
 GRIPPER_JOINT = "arm_gripper.pos"
+# pan 고정 중에는 가로 허용치를 이 배수까지 넓게 본다 (고정이라 맞출 수 없으므로).
+# 이보다 더 어긋나면 '정렬 불가'로 두어 접근부터 다시 하게 한다.
+PAN_FROZEN_TOLERANCE_SCALE = 4.0
 # 재시도 때 더 내릴 높이 관절 (pan 은 제외 — 옆으로 밀리지 않게)
 DEPTH_JOINTS = ("arm_shoulder_lift.pos", "arm_elbow_flex.pos")
 
@@ -78,6 +81,11 @@ class GraspArgs:
     pan_joint: str = "arm_shoulder_pan.pos"
     pan_gain: float = 0.15
     pan_sign: float = 1.0
+    # true 면 GRIP FAIL 재시도(attempt>0)에서는 좌우(pan)를 더 움직이지 않고 지금 각도에 고정한다.
+    # 첫 접근의 정렬은 그대로 두고, 재시도 때마다 조금씩 왼쪽으로 쌓이던 것만 막는다
+    # (2026-09-16 실기기: 재시도할수록 팔이 왼쪽으로 밀려 약통을 밀었다). 고정 중에는 가로 정렬을
+    # 통과로 보고 (x_ok=True) 높이만 다시 맞춘다 -- 아니면 맞출 수 없는 조건을 기다리다 멈춘다.
+    pan_freeze_on_retry: bool = False
     # 세로 오차(dy) 를 움직일 관절과 게인, 부호
     tilt_joint: str = "arm_wrist_flex.pos"
     tilt_gain: float = 0.15
@@ -133,6 +141,11 @@ class GraspArgs:
     retry_depth_step: float = 0.02
     # 재시도로 더 내리는 총량 상한 (경로 비율). 바닥에 박지 않게 하는 안전 한계
     retry_depth_max: float = 0.06
+    # 더 내려간 만큼 손목(tilt_joint, 기본 arm_wrist_flex)을 반대로 돌려 집게가 향하는 각도를 유지한다.
+    # 0 = 하지 않음(예전 동작). 1.0 = 높이 관절이 더 굽은 각도의 합만큼 손목을 되돌린다.
+    # 어깨·팔꿈치만 더 굽히면 팔이 호를 그려 집게가 약통을 훑으며 아래로 미끄러졌다
+    # (2026-09-16 실기기: 재시도할수록 약통 아랫부분을 잡으려 했다). 부호가 반대면 -1.0 으로 쓴다.
+    retry_depth_wrist_comp: float = 0.0
 
     # --- 4. 집기: READY 후 그리퍼 닫기 ---
 
@@ -345,15 +358,26 @@ class WristServo:
         self._depth_pending = False  # 더 내리는 중 — 다 내려가기 전엔 다시 집지 않는다
 
     @property
+    def pan_frozen(self) -> bool:
+        """재시도에서 좌우를 고정하는 중인가 (pan_freeze_on_retry 이고 첫 시도가 아님)."""
+        return self.cfg.pan_freeze_on_retry and self.attempt > 0
+
+    @property
     def done(self) -> bool:
         return self.state == "READY"
 
     def _compose(self) -> dict[str, float]:
         pose = {k: self.start[k] + self.reach[k] * self.progress for k in self.start}
         if self.cfg.approach_mode == "pose" and self.retry_depth > 0:
+            extra = 0.0
             for k in DEPTH_JOINTS:
                 if k in pose:
-                    pose[k] += self.reach[k] * self.retry_depth
+                    step = self.reach[k] * self.retry_depth
+                    pose[k] += step
+                    extra += step
+            # 더 굽힌 만큼 손목을 반대로 돌려 집게가 향하는 각도를 유지한다 (안 하면 아래로 미끄러진다)
+            if self.cfg.retry_depth_wrist_comp and self.cfg.tilt_joint in pose:
+                pose[self.cfg.tilt_joint] -= extra * self.cfg.retry_depth_wrist_comp
         if self.cfg.pan_joint in pose:
             pose[self.cfg.pan_joint] += self.pan_delta
         if self.cfg.tilt_joint in pose:
@@ -451,6 +475,11 @@ class WristServo:
         self.anchor_x = {"left": x1, "center": bx, "right": x2}[self.cfg.x_anchor]
         self.dx = self.anchor_x - cx0 - self.cfg.x_target_dx
         self.x_ok = abs(self.dx) <= self.cfg.x_tolerance_px
+        if self.pan_frozen:
+            # 재시도: 좌우는 고정이라 작은 오차는 통과로 본다. 다만 크게 어긋났는데도 통과시키면
+            # 틀린 자리에서 계속 앞/아래로 밀고 들어간다 -- 그때는 예전처럼 멈췄다가
+            # servo_give_up_s 뒤 접근부터 다시 하게 둔다 (2026-09-16 코드 검토).
+            self.x_ok = abs(self.dx) <= self.cfg.x_tolerance_px * PAN_FROZEN_TOLERANCE_SCALE
         self._last_x_ok = self.x_ok
         # 세로
         m = self.cfg.inside_margin_px
@@ -496,7 +525,10 @@ class WristServo:
             if self.state != "REFINING":
                 self._refine_since = now
             lim = self.cfg.max_correction_deg
-            self.pan_delta = float(np.clip(self.pan_delta + self.cfg.pan_sign * self.cfg.pan_gain * self.dx * dt, -lim, lim))
+            if not self.pan_frozen:
+                self.pan_delta = float(
+                    np.clip(self.pan_delta + self.cfg.pan_sign * self.cfg.pan_gain * self.dx * dt, -lim, lim)
+                )
             self.tilt_delta = float(
                 np.clip(self.tilt_delta + self.cfg.tilt_sign * self.cfg.tilt_gain * self.dy * dt, -lim, lim)
             )
@@ -504,7 +536,10 @@ class WristServo:
         elif not self.inside:
             # 2. 중앙 맞추기: 오차에 비례해 보정을 누적 (관절이 위치 제어라 적분형이 맞다)
             lim = self.cfg.max_correction_deg
-            self.pan_delta = float(np.clip(self.pan_delta + self.cfg.pan_sign * self.cfg.pan_gain * self.dx * dt, -lim, lim))
+            if not self.pan_frozen:
+                self.pan_delta = float(
+                    np.clip(self.pan_delta + self.cfg.pan_sign * self.cfg.pan_gain * self.dx * dt, -lim, lim)
+                )
             self.tilt_delta = float(
                 np.clip(self.tilt_delta + self.cfg.tilt_sign * self.cfg.tilt_gain * self.dy * dt, -lim, lim)
             )

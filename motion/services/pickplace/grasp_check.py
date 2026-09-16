@@ -45,6 +45,10 @@ class GraspCheckArgs:
     front_min_purple_ratio: float | None = 0.23
     # 뷰별로 좌/우 둘 다 있어야 OK. false 면 한쪽만 있어도 OK (큐브가 한쪽 손가락을 가릴 때)
     require_both_sides: bool = True
+    # 어느 쪽 띠로 판정할지: both(require_both_sides 를 따른다, 기본) / left(왼쪽만) / right(오른쪽만)
+    # left: 그리퍼는 왼쪽 손가락이 고정이고 오른쪽만 움직인다. 잘 쥐어도 오른쪽 손가락이 약통에
+    # 가려 오른쪽 띠 비율이 낮게 나와 GRIP FAIL 로 재시도했다 (2026-09-14 실기기) — 고정된 왼쪽만 본다.
+    sides: str = "both"
 
     # 두 뷰 모두 OK 인 프레임이 이만큼 연속이면 SUCCESS
     confirm_frames: int = 5
@@ -70,6 +74,8 @@ class GraspCheckArgs:
             raise PickPlaceError(
                 f"error: check.front_min_purple_ratio 는 0~1 사이여야 합니다 (받은 값: {self.front_min_purple_ratio})"
             )
+        if self.sides not in ("both", "left", "right"):
+            raise PickPlaceError(f"error: check.sides 는 both/left/right 중 하나여야 합니다 (받은 값: {self.sides})")
         if self.confirm_frames < 1 or self.timeout_s <= 0:
             raise PickPlaceError("error: check.confirm_frames 는 1 이상, timeout_s 는 0 보다 커야 합니다")
 
@@ -190,7 +196,12 @@ class GraspChecker:
         res.right_ratio = strip_ratio(mask, res.right_strip)
         thr = self.cfg.min_ratio_for(view)
         lo, ro = res.left_ratio >= thr, res.right_ratio >= thr
-        res.ok = (lo and ro) if self.cfg.require_both_sides else (lo or ro)
+        if self.cfg.sides == "left":
+            res.ok = lo
+        elif self.cfg.sides == "right":
+            res.ok = ro
+        else:
+            res.ok = (lo and ro) if self.cfg.require_both_sides else (lo or ro)
         return res
 
     def update(

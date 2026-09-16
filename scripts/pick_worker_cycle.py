@@ -98,6 +98,21 @@ def parse_args(argv=None):
                     help="멈출 때 팔을 시작 자세로 되돌리는 시간(초)")
     ap.add_argument("--max-pick-attempts", type=int, default=None,
                     help="접근부터 다시 집는 최대 횟수(첫 시도 포함). 다 쓰면 포기. 기본은 워커 설정(5)")
+    ap.add_argument("--x-target-dx", type=int, default=None,
+                    help="손목 뷰에서 약통 기준 변(x_anchor, 기본 왼쪽 변)을 맞출 위치 = 화면 중심 x + 이 값(px). "
+                         "생략하면 워커 기본값(0). 음수 = 왼쪽")
+    ap.add_argument("--y-target-dy", type=int, default=None,
+                    help="손목 뷰에서 약통 세로 기준(y_anchor, 기본 박스 중심)을 맞출 위치 = 화면 중심 y + 이 값(px). "
+                         "생략하면 워커 기본값(+25). 음수 = 위 -- 박스가 위로 가면 집게가 약통의 더 아랫부분을 문다")
+    ap.add_argument("--pan-freeze-on-retry", action="store_true",
+                    help="집기 재시도에서는 좌우(shoulder_pan)를 더 움직이지 않고 고정한다. 첫 접근의 정렬은 그대로 "
+                         "두고, 재시도마다 왼쪽으로 밀리던 것만 막는다 (2026-09-16 실기기)")
+    ap.add_argument("--grasp-check-sides", choices=("both", "left", "right"), default=None,
+                    help="집기 성공 판정에 볼 그리퍼 쪽. left = 고정된 왼쪽 손가락만 본다 "
+                         "(오른쪽 손가락이 약통에 가려 잘 쥐어도 실패로 볼 때). 생략하면 워커 기본값(both)")
+    ap.add_argument("--frames-dir", default="",
+                    help="비어 있지 않으면 상태가 바뀔 때마다 워커가 그린 front/wrist 화면(pan/dx 숫자 포함)을 "
+                         "<이 폴더>/<시각>_<색>/ 에 jpg 로 남긴다")
     ap.add_argument("--dry-run", action="store_true", help="계산만 하고 실제로 움직이지 않음")
     ap.add_argument("--view-port", type=int, default=0,
                     help="0 이 아니면 집는 동안 워커가 그린 front/wrist 화면(십자선·검출·정렬 숫자)을 "
@@ -150,13 +165,56 @@ def outcome(status: dict):
     return None
 
 
+def apply_grasp_overrides(cfg, args) -> list[str]:
+    """명령줄로 받은 집기 설정을 워커 설정에 넣는다. 바꾼 항목을 사람이 읽을 문자열로 돌려준다.
+
+    x_target_dx: 그리퍼는 왼쪽 집게가 고정이고 오른쪽 집게만 움직인다. 기본값 0(약통 왼쪽 변 =
+    화면 중심선)이면 닫기 직전 약통이 고정 집게 안쪽(손목 뷰에서 중심보다 약 60px 왼쪽)에서
+    떨어져 있어, 오른쪽 집게가 약통을 왼쪽으로 민다. 재시도 때 서보가 밀린 약통을 따라
+    shoulder_pan 을 왼쪽으로 돌려 점점 왼쪽으로 갔다 (2026-09-13 프레임, 2026-09-14 실기기).
+    """
+    changed = []
+    if getattr(args, "x_target_dx", None) is not None:
+        cfg.grasp.x_target_dx = int(args.x_target_dx)
+        changed.append(f"x_target_dx={cfg.grasp.x_target_dx:+d}")
+    # y_target_dy: 기본 +25(박스 중심을 화면 중심보다 25px 아래)면 집게가 약통 윗부분(뚜껑 쪽)을
+    # 물었다 (2026-09-14 실기기). 음수로 두면 박스가 위로 올라가 중간보다 아랫부분을 문다.
+    if getattr(args, "y_target_dy", None) is not None:
+        cfg.grasp.y_target_dy = int(args.y_target_dy)
+        changed.append(f"y_target_dy={cfg.grasp.y_target_dy:+d}")
+    if getattr(args, "pan_freeze_on_retry", False):
+        cfg.grasp.pan_freeze_on_retry = True
+        changed.append("pan_freeze_on_retry=True")
+    if getattr(args, "grasp_check_sides", None) is not None:
+        cfg.check.sides = args.grasp_check_sides
+        changed.append(f"check.sides={cfg.check.sides}")
+    return changed
+
+
+def save_frames(worker, out_dir, elapsed: float, state: str | None,
+                views=("front", "wrist")) -> list[Path]:
+    """워커가 지금 그려 둔 화면을 jpg 로 남긴다 (없는 view 는 건너뛴다)."""
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    saved = []
+    for v in views:
+        jpg = worker.frames.get(v)
+        if not jpg:
+            continue
+        p = out / f"{elapsed:06.1f}s_{state or 'NONE'}_{v}.jpg"
+        p.write_bytes(jpg)
+        saved.append(p)
+    return saved
+
+
 def run_cycle(worker, *, max_seconds: float, target_class: str | None = None,
               poll_s: float = 0.2, join_timeout_s: float = 15.0,
               stop_flag: threading.Event | None = None,
-              clock=time.monotonic, sleep=time.sleep, report=None) -> dict:
+              clock=time.monotonic, sleep=time.sleep, report=None, on_change=None) -> dict:
     """워커를 한 번 돌려 결과 dict 를 돌려준다. 어떤 경로로 끝나든 request_stop 한다.
 
     report: 한 줄 문자열을 받는 함수. status(REPORT_KEYS)가 바뀔 때마다 부른다.
+    on_change: (경과초, status 요약 dict) 를 받는 함수. report 와 같은 때 부른다 (화면 저장용).
     """
     if target_class:
         worker.set_target_class(target_class)
@@ -169,8 +227,15 @@ def run_cycle(worker, *, max_seconds: float, target_class: str | None = None,
         while True:
             last = worker.status.get() or {}
             snap = {k: last[k] for k in REPORT_KEYS if k in last}
-            if report is not None and snap != prev_snap:
-                report(f"{clock() - t0:6.1f}s 상태 {snap}")
+            if snap != prev_snap:
+                if report is not None:
+                    report(f"{clock() - t0:6.1f}s 상태 {snap}")
+                if on_change is not None:
+                    try:                         # 화면 저장이 실패해도 집기는 계속한다
+                        on_change(clock() - t0, snap)
+                    except Exception as exc:
+                        if report is not None:
+                            report(f"화면 저장 실패: {exc}")
                 prev_snap = snap
             r = outcome(last)
             if r is not None:
@@ -329,7 +394,10 @@ def main(argv=None) -> int:
         cfg.dry_run = args.dry_run
         if args.max_pick_attempts is not None:
             cfg.grasp.max_pick_attempts = args.max_pick_attempts
+        changed = apply_grasp_overrides(cfg, args)
         cfg.validate()
+        if changed:
+            print(f"[pick_worker_cycle] 집기 설정 변경: {', '.join(changed)}", flush=True)
 
         model = load_model(cfg.yolo)
         target_class = resolve_target_class(model.names, args.color, args.class_name)
@@ -358,10 +426,16 @@ def main(argv=None) -> int:
                 print(f"[pick_worker_cycle] 집기 화면: http://localhost:{args.view_port}", flush=True)
             except OSError as e:               # 포트가 이미 쓰이면 화면만 포기하고 집기는 계속
                 print(f"[pick_worker_cycle] 화면 서버를 못 띄움 ({e}) -- 집기는 계속", flush=True)
+        on_change = None
+        if args.frames_dir:
+            frames_out = Path(os.path.expanduser(args.frames_dir)) / f"{time.strftime('%Y%m%d_%H%M%S')}_{args.color}"
+            print(f"[pick_worker_cycle] 상태별 화면 저장: {frames_out}", flush=True)
+            on_change = lambda elapsed, snap: save_frames(worker, frames_out, elapsed, snap.get("state"))  # noqa: E731
         try:
             result = run_cycle(worker, max_seconds=args.max_seconds, target_class=target_class,
                                join_timeout_s=args.rollout_time + 15.0, stop_flag=stop_flag,
-                               report=lambda line: print(f"[pick_worker_cycle] {line}", flush=True))
+                               report=lambda line: print(f"[pick_worker_cycle] {line}", flush=True),
+                               on_change=on_change)
         finally:
             if view is not None:
                 view.shutdown()

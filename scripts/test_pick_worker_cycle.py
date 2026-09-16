@@ -248,6 +248,29 @@ class TestRunCycle(unittest.TestCase):
         texts = [ln.split("상태 ", 1)[1] for ln in lines]
         self.assertTrue(all(a != b for a, b in zip(texts, texts[1:])), lines)   # 같은 상태는 한 번만
 
+    def test_on_change_called_with_state_once_per_change(self):
+        seen = []
+        w = FakeWorker([{"state": "SERVO"}, {"state": "SERVO"}, {"state": "GRASP_CHECK"},
+                        {"state": "DONE", "arm_done": True}])
+        run(w, on_change=lambda t, snap: seen.append(snap.get("state")))
+        self.assertEqual(seen, ["SERVO", "GRASP_CHECK", "DONE"])
+
+    def test_on_change_failure_does_not_stop_pick(self):
+        def boom(_t, _snap):
+            raise OSError("디스크 가득")
+        lines = []
+        r = run(FakeWorker([{"state": "DONE", "arm_done": True}]), on_change=boom, report=lines.append)
+        self.assertTrue(r["success"])
+        self.assertTrue(any("화면 저장 실패" in ln for ln in lines))
+
+    def test_save_frames_writes_available_views(self):
+        w = FakeWorker([{}])
+        w.frames = type("F", (), {"get": lambda _s, v: b"JPG-wrist" if v == "wrist" else None})()
+        with tempfile.TemporaryDirectory() as d:
+            saved = pwc.save_frames(w, Path(d) / "run", 12.34, "WRIST_REFINE")
+            self.assertEqual([p.name for p in saved], ["0012.3s_WRIST_REFINE_wrist.jpg"])
+            self.assertEqual(saved[0].read_bytes(), b"JPG-wrist")
+
     def test_no_report_by_default(self):
         w = FakeWorker([{"state": "DONE", "arm_done": True}])
         self.assertTrue(run(w)["success"])
@@ -321,6 +344,49 @@ class TestMain(unittest.TestCase):
             data = json.loads(result.read_text(encoding="utf-8"))
             self.assertFalse(data["success"])
             self.assertIn("시작 실패", data["verdict_reason"])
+
+    def test_x_target_dx_default_keeps_worker_value(self):
+        cfg = PickPlaceConfig()
+        before = cfg.grasp.x_target_dx
+        self.assertEqual(pwc.apply_grasp_overrides(cfg, pwc.parse_args(REQ)), [])
+        self.assertEqual(cfg.grasp.x_target_dx, before)
+        self.assertEqual(pwc.parse_args(REQ).frames_dir, "")
+
+    def test_x_target_dx_override(self):
+        cfg = PickPlaceConfig()
+        args = pwc.parse_args(REQ + ["--x-target-dx", "-60"])
+        self.assertEqual(pwc.apply_grasp_overrides(cfg, args), ["x_target_dx=-60"])
+        self.assertEqual(cfg.grasp.x_target_dx, -60)
+        self.assertEqual(cfg.grasp.x_anchor, "left")     # 기준 변은 그대로
+        cfg.validate()
+
+    def test_y_target_dy_override(self):
+        cfg = PickPlaceConfig()
+        args = pwc.parse_args(REQ + ["--x-target-dx", "-60", "--y-target-dy", "-30"])
+        self.assertEqual(pwc.apply_grasp_overrides(cfg, args), ["x_target_dx=-60", "y_target_dy=-30"])
+        self.assertEqual(cfg.grasp.y_target_dy, -30)
+        self.assertEqual(cfg.grasp.y_anchor, "center")   # 세로 기준은 그대로
+        cfg.validate()
+
+    def test_grasp_check_sides_override(self):
+        cfg = PickPlaceConfig()
+        self.assertEqual(cfg.check.sides, "both")
+        args = pwc.parse_args(REQ + ["--grasp-check-sides", "left"])
+        self.assertEqual(pwc.apply_grasp_overrides(cfg, args), ["check.sides=left"])
+        self.assertEqual(cfg.check.sides, "left")
+        cfg.validate()
+        with self.assertRaises(SystemExit):
+            pwc.parse_args(REQ + ["--grasp-check-sides", "middle"])
+
+    def test_pan_freeze_on_retry_flag(self):
+        cfg = PickPlaceConfig()
+        self.assertFalse(cfg.grasp.pan_freeze_on_retry)
+        self.assertEqual(pwc.apply_grasp_overrides(cfg, pwc.parse_args(REQ)), [])
+        self.assertFalse(cfg.grasp.pan_freeze_on_retry)          # 옵션 없으면 기존 동작 그대로
+        args = pwc.parse_args(REQ + ["--pan-freeze-on-retry"])
+        self.assertEqual(pwc.apply_grasp_overrides(cfg, args), ["pan_freeze_on_retry=True"])
+        self.assertTrue(cfg.grasp.pan_freeze_on_retry)
+        cfg.validate()
 
     def test_args_same_as_pick_cycle(self):
         a = pwc.parse_args(REQ + ["--remote-ip", "10.0.0.9"])

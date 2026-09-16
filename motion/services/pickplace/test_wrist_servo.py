@@ -166,3 +166,98 @@ def test_default_retry_only_lowers_height():
     assert (cfg.retry_depth_step, cfg.retry_depth_max) == (0.02, 0.06)
     assert (cfg.target_size_px, cfg.left_min_conf, cfg.y_anchor, cfg.y_target_dy) == (290, 0.5, "center", 25)
     cfg.validate()
+
+
+# ── 재시도에서 좌우 고정 (2026-09-16) ──────────────────────────────────────────
+
+def _servo_at_retry(**kw):
+    """재시도 1회 진행한 서보. kw 는 GraspArgs 에 그대로 넘긴다.
+
+    retry_depth_step=0: 재시도 직후 '더 내려가는 중'(_depth_pending)이면 update 가 좌우 계산을
+    건너뛰고 바로 돌아온다 -- 좌우 동작만 보려는 테스트라 그 단계를 끈다.
+    """
+    from services.pickplace.wrist_servo import GraspArgs, WristServo
+
+    kw.setdefault("retry_depth_step", 0.0)
+    start = {"arm_shoulder_pan.pos": 0.0, "arm_shoulder_lift.pos": 0.0, "arm_elbow_flex.pos": 0.0,
+             "arm_wrist_flex.pos": 0.0, "arm_gripper.pos": 100.0}
+    grasp = dict(start, **{"arm_shoulder_lift.pos": 60.0, "arm_elbow_flex.pos": -40.0})
+    s = WristServo(GraspArgs(**kw), start, grasp)
+    s.resume()          # GRIP FAIL 뒤 재시도 1회
+    return s
+
+
+def _step(servo, box_dx_px):
+    """박스를 화면 중심에서 box_dx_px 만큼 오른쪽에 두고 한 프레임 돌린다."""
+    from services.pickplace.yolo_detect import Detection
+
+    cx = 320 + box_dx_px
+    det = Detection(name="pill", conf=0.9, xyxy=(cx - 30, 200, cx + 30, 280), cls=0)
+    return servo.update([det], (480, 640, 3), dt=0.1, now=1.0, allow_motion=True)
+
+
+def test_pan_keeps_correcting_on_retry_by_default():
+    s = _servo_at_retry()
+    _step(s, 120)
+    assert s.pan_frozen is False
+    assert s.pan_delta != 0.0
+
+
+def test_pan_frozen_on_retry_when_enabled():
+    """2026-09-16 실기기: 재시도마다 좌우가 왼쪽으로 쌓여 약통을 밀었다 -- 재시도에선 pan 고정."""
+    s = _servo_at_retry(pan_freeze_on_retry=True)
+    _step(s, 120)
+    assert s.pan_frozen is True
+    assert s.pan_delta == 0.0
+    assert s.x_ok is True            # 맞출 수 없는 가로 조건을 기다리다 멈추지 않는다
+    assert s.dx != 0                 # dx 는 화면 표시용으로 계속 계산한다
+
+
+def test_pan_frozen_gives_up_when_way_off():
+    """고정 중이라도 크게 어긋나면 통과시키지 않는다 -- 틀린 자리에서 계속 밀고 들어가지 않게."""
+    s = _servo_at_retry(pan_freeze_on_retry=True)
+    _step(s, 400)                    # 허용치(25) x 4 = 100px 을 훨씬 넘는 오차
+    assert s.x_ok is False
+    assert s.pan_delta == 0.0        # 그래도 pan 은 움직이지 않는다
+
+
+def test_pan_frozen_small_error_passes():
+    s = _servo_at_retry(pan_freeze_on_retry=True)
+    _step(s, 40)                     # 허용치보단 크지만 4배 안
+    assert s.x_ok is True
+
+
+def test_wrist_compensation_keeps_tilt_when_lowering():
+    """재시도로 더 내려갈 때 손목을 반대로 돌려 집게 각도를 유지한다 (약통을 훑고 내려가지 않게)."""
+    from services.pickplace.wrist_servo import GraspArgs, WristServo
+
+    start = {"arm_shoulder_pan.pos": 0.0, "arm_shoulder_lift.pos": 0.0, "arm_elbow_flex.pos": 0.0,
+             "arm_wrist_flex.pos": 10.0, "arm_gripper.pos": 100.0}
+    grasp = dict(start, **{"arm_shoulder_lift.pos": 60.0, "arm_elbow_flex.pos": -40.0})
+
+    off = WristServo(GraspArgs(retry_depth_step=0.05), start, grasp)
+    off.resume()
+    on = WristServo(GraspArgs(retry_depth_step=0.05, retry_depth_wrist_comp=1.0), start, grasp)
+    on.resume()
+    a, b = off._compose(), on._compose()
+    assert a["arm_shoulder_lift.pos"] == b["arm_shoulder_lift.pos"]        # 내려가는 양은 같다
+    assert a["arm_wrist_flex.pos"] == 10.0                                # 보정 없으면 손목 그대로
+    # lift +60*0.05, elbow -40*0.05 => 합 +1.0 만큼 굽었으니 손목은 그만큼 반대로
+    assert b["arm_wrist_flex.pos"] == 9.0
+
+
+def test_wrist_compensation_off_by_default():
+    from services.pickplace.wrist_servo import GraspArgs
+    assert GraspArgs().retry_depth_wrist_comp == 0.0
+
+
+def test_first_attempt_still_aligns_when_freeze_enabled():
+    from services.pickplace.wrist_servo import GraspArgs, WristServo
+
+    start = {"arm_shoulder_pan.pos": 0.0, "arm_shoulder_lift.pos": 0.0, "arm_elbow_flex.pos": 0.0,
+             "arm_wrist_flex.pos": 0.0, "arm_gripper.pos": 100.0}
+    grasp = dict(start, **{"arm_shoulder_lift.pos": 60.0})
+    s = WristServo(GraspArgs(pan_freeze_on_retry=True), start, grasp)
+    assert s.pan_frozen is False     # 첫 시도(attempt 0)는 그대로 정렬한다
+    _step(s, 120)
+    assert s.pan_delta != 0.0
